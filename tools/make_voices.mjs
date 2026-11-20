@@ -24,7 +24,8 @@ function loadPhrases() {
   const ctx = { window: {}, innerWidth: 1280, innerHeight: 720, localStorage: null, console };
   vm.createContext(ctx);
   const code = readFileSync(path.join(GAME, 'common.js'), 'utf8') + '\n' + readFileSync(path.join(GAME, 'phrases.js'), 'utf8')
-    + '\nglobalThis.__out = { phrases: allPhrases(), zeus: zeusPhrases(), hermes: hermesPhrases(), villagers: villagerPhrases(), cards: cardPhrases(), file: audioFile };';
+    + '\n' + readFileSync(path.join(GAME, 'voyage_text.js'), 'utf8')
+    + '\nglobalThis.__out = { phrases: allPhrases(), zeus: zeusPhrases(), hermes: hermesPhrases(), villagers: villagerPhrases(), cards: cardPhrases(), voyage: voyPhrases(), file: audioFile };';
   vm.runInContext(code, ctx);
   return ctx.__out;
 }
@@ -98,7 +99,7 @@ if (hi >= 0) cfg.hermes = args[hi + 1];
 if (vi >= 0 || zi >= 0 || hi >= 0) writeFileSync(CONFIG, JSON.stringify(cfg, null, 2));
 if (!cfg.voiceId) { console.error('Choose a voice first: npm run voices -- --voice <name or id>'); process.exitCode = 1; return; }
 
-const { phrases, zeus, hermes, villagers, cards, file } = loadPhrases();
+const { phrases, zeus, hermes, villagers, cards, voyage, file } = loadPhrases();
 // every recording: [text, voice folder (undefined = narrator), ElevenLabs voice id]
 const jobs = [...phrases, ...cards].map(t => [t, undefined, cfg.voiceId]);   // narrator: game lines + the shop's card texts
 if (cfg.zeus) zeus.forEach(t => jobs.push([t, 'zeus', cfg.zeus]));
@@ -107,8 +108,11 @@ if (cfg.hermes) hermes.forEach(t => jobs.push([t, 'hermes', cfg.hermes]));
 else console.log('(no Hermes voice set yet: npm run voices -- --hermes <id>)');
 // villagers: one library voice per kind of person (tools/voice.json "villagers": { girl: id, ... })
 for (const [t, folder] of villagers) { const id = cfg.villagers?.[folder.split('/')[1]]; if (id) jobs.push([t, folder, id]); }
-for (const d of ['audio', 'audio/zeus', 'audio/hermes', ...Object.keys(cfg.villagers || {}).map(t => 'audio/villagers/' + t)]) mkdirSync(path.join(GAME, 'assets', d), { recursive: true });
-let todo = jobs.filter(([t, v]) => !existsSync(path.join(GAME, file(t, v))));
+// The Voyage story: each character's own voice (tools/voice.json "voyage": { odysseus: id, ... }), the narrator for the rest
+for (const [t, folder] of voyage) { const id = folder ? cfg.voyage?.[folder] : cfg.voiceId; if (id) jobs.push([t, folder, id]); }
+for (const d of ['audio', 'audio/zeus', 'audio/hermes', ...Object.keys(cfg.villagers || {}).map(t => 'audio/villagers/' + t), ...Object.keys(cfg.voyage || {}).map(t => 'audio/' + t)]) mkdirSync(path.join(GAME, 'assets', d), { recursive: true });
+const seen = new Set();   // the same line can come from two lists: record it once
+let todo = jobs.filter(([t, v]) => { const f = file(t, v); if (seen.has(f) || existsSync(path.join(GAME, f))) return false; seen.add(f); return true; });
 const li = args.indexOf('--limit'); if (li >= 0) todo = todo.slice(0, +args[li + 1]);   // e.g. --limit 1 to test first
 const chars = todo.reduce((a, [t]) => a + t.length, 0);
 console.log(`${jobs.length} recordings, ${todo.length} to make (${chars} characters)`);

@@ -1,0 +1,12 @@
+{
+  "Odysseus": { "text": "I am Odysseus. I want to go home to Ithaca.",
+    "voices": { "Your pick": "gVh6lddROTbOaOz9AAnY" } },
+  "Circe": { "text": "Welcome! Here is some soup for you.",
+    "voices": { "Vivien (mysterious witch)": "sssn4wp3AspuK2kvy3Ym", "Minerva (dark enchantress, British)": "fgDJOgmENIR82PueQrVs", "Daria (funny creepy witch, British)": "DUhzmIGFwXJ752SvgcCj" } },
+  "Athena": { "text": "I am Athena. I will help you in the storm.",
+    "voices": { "Elariel (epic queen, British)": "ksryVoNAGZT8GxWCTiVm", "Tessa (wise leader, British)": "USEQXnsXRJlw2k9LUzG4", "Poppy (elegant and strong)": "m8PfgWULna67DKNOKhKR" } },
+  "Poseidon": { "text": "I am Poseidon! You will not go home!",
+    "voices": { "God (deep, powerful)": "HNSF1CTQmub252yhXROX", "Blackbeard (gritty sea captain)": "6VgigPFWF0sNZy1BthVg", "Maverick (commanding)": "V33LkP9pVLdcjeB2y5Na" } },
+  "Cyclops": { "text": "Nobody? What a funny name! Ha ha!",
+    "voices": { "Azgar (orc, troll)": "3VkFsBHdRPqWKsitgYhJ", "Mossbeard (ancient creature)": "bFrjFL4nlpeYNwNRhXxq", "Joe (deep villain)": "RsWhJadjwfxA0DsrtYJe" } }
+}

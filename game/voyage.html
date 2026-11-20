@@ -191,7 +191,7 @@ class Base extends Phaser.Scene {
     const text = add(this.add.text(800, 330, '', { fontFamily: 'Nunito', fontSize: 38, fontStyle: '900', color: '#2b1a0a', align: 'center', wordWrap: { width: 560 }, lineSpacing: 6 }).setOrigin(0.5));
     const he = add(this.add.text(800, 470, '', { fontFamily: 'Nunito', fontSize: 26, fontStyle: '900', color: '#9a5a10', align: 'center', wordWrap: { width: 560 } }).setOrigin(0.5).setVisible(false));
     const small = (x, label, fn) => { const t = add(this.add.text(x, 520, label, { fontFamily: 'Nunito', fontSize: 24, fontStyle: '900', color: '#2b1a0a', backgroundColor: '#f0e2c4', padding: { x: 10, y: 4 } }).setOrigin(0.5)); t.setInteractive({ useHandCursor: true }).on('pointerdown', fn); return t; };
-    small(560, '🔊', () => say(pages[i].en));
+    small(560, '🔊', () => say(pages[i].en, voyVoice(pages[i])));
     small(650, 'עברית', () => he.setVisible(!he.visible));
     const btn = add(this.add.container(1010, 600));
     btn.add([this.add.graphics().fillStyle(0x2b1a0a).fillRoundedRect(-110, -26, 220, 62, 31).fillStyle(0xffd43b).fillRoundedRect(-110, -32, 220, 62, 31).lineStyle(4, 0x2b1a0a).strokeRoundedRect(-110, -32, 220, 62, 31),

@@ -63,7 +63,8 @@ Phaser gotcha: `rtl: true` on a Text makes other Text objects vanish. Don't use 
 - `npm run voices` runs `tools/make_voices.mjs` and records missing lines into `game/assets/audio/`. Which voice each character uses is in `tools/voice.json`. `tools/credits.mjs` shows the remaining credits; `tools/find_voices.mjs` searches for voices.
 - Model `eleven_multilingual_v2` shouts lines ending in "!", so Zeus lines are recorded with "!" changed to ".". Check loudness (median about -21 dB) and re-record outliers.
 - Read-aloud hints for generated text are NOT recorded (too many credits); they use the browser voice.
-- Still open: a voice for Odysseus.
+- The Voyage story panels are recorded: Odysseus, Circe, Athena, Poseidon, the Cyclops and Hermes each have their own voice (`voice.json` "voyage"; `voyVoice()` in `voyage_text.js`). Panels marked `narr: true`, and all the others, use the narrator.
+- To choose a new voice: list candidates in a JSON file like `tools/samples_voyage.json` and run `node --env-file=.env.local tools/sample_voices.mjs <file>`. It makes a listening page in `art/voice_samples/`.
 
 ### The key: strict rules
 

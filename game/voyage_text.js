@@ -1,5 +1,6 @@
 // The Voyage of Odysseus: every sentence she reads, with Hebrew help.
 // Story panels: { who, en, he } (who = whose picture and name show: odysseus, hermes, circe, cyclops, athena, poseidon, log, ...).
+// narr: true = the narrator reads this panel, though the picture shows the character.
 // The instructions on the islands are made by the generators in voyage.html from the lists here.
 
 const VOY_ISLANDS = [ // [scene, place name, map note, hebrew, gift cards]
@@ -15,7 +16,7 @@ const VOY_STORY = {
   intro: [
     { who: 'log', en: 'The war in Troy is over.', he: 'המלחמה בטרויה נגמרה.' },
     { who: 'odysseus', en: 'I am Odysseus. I want to go home to Ithaca.', he: 'אני אודיסאוס. אני רוצה לחזור הביתה לאיתקה.' },
-    { who: 'poseidon', en: 'But Poseidon, the god of the sea, is angry!', he: 'אבל פוסידון, אל הים, כועס!' },
+    { who: 'poseidon', narr: true, en: 'But Poseidon, the god of the sea, is angry!', he: 'אבל פוסידון, אל הים, כועס!' },
     { who: 'odysseus', en: 'Brave daughter of Zeus, please sail with me!', he: 'בת אמיצה של זאוס, בבקשה הפליגי איתי!' },
     { who: 'log', en: 'Use the arrows to sail. Press SPACE at an island.', he: 'השתמשי בחצים כדי להפליג. לחצי רווח ליד אי.' },
   ],
@@ -32,8 +33,8 @@ const VOY_STORY = {
   Cyclops1: [
     { who: 'log', en: 'The ship comes to the land of the Cyclopes.', he: 'הספינה מגיעה לארץ הקיקלופים.' },
     { who: 'log', en: 'You find a big cave with sheep and cheese.', he: 'את מוצאת מערה גדולה עם כבשים וגבינה.' },
-    { who: 'cyclops', en: 'Oh no! The Cyclops comes home!', he: 'אוי לא! הקיקלופ חוזר הביתה!' },
-    { who: 'cyclops', en: 'He closes the cave with a huge rock.', he: 'הוא סוגר את המערה בסלע ענק.' },
+    { who: 'cyclops', narr: true, en: 'Oh no! The Cyclops comes home!', he: 'אוי לא! הקיקלופ חוזר הביתה!' },
+    { who: 'cyclops', narr: true, en: 'He closes the cave with a huge rock.', he: 'הוא סוגר את המערה בסלע ענק.' },
     { who: 'log', en: 'His name is Polyphemus. He is the son of Poseidon.', he: 'קוראים לו פוליפמוס. הוא הבן של פוסידון.' },
     { who: 'odysseus', en: 'Psst! If he asks your name, say "Nobody".', he: 'פססט! אם הוא שואל איך קוראים לך, תגידי "אף אחד".' },
   ],
@@ -132,3 +133,11 @@ const VOY_ROCKS = [
   ['flag', 'Gold is next to the rock with a red flag.', 'הזהב ליד הסלע עם הדגל האדום.'],
   ['shell', 'Gold is next to the rock with a big shell.', 'הזהב ליד הסלע עם הצדף הגדול.'],
 ];
+
+// Recorded voices: these characters speak their own panels (recordings in assets/audio/<who>/); everything else is the narrator.
+const VOY_VOICES = ['odysseus', 'circe', 'athena', 'poseidon', 'cyclops', 'hermes'];
+const voyVoice = p => (!p.narr && VOY_VOICES.includes(p.who)) ? p.who : undefined;
+// every story line with its voice, for tools/make_voices.mjs: [[text, voice folder or undefined], ...]
+function voyPhrases() {
+  return Object.values(VOY_STORY).flat().map(p => [p.en, voyVoice(p)]);
+}

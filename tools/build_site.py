@@ -12,7 +12,7 @@ import json, os, re, shutil, sys
 
 ROOT = os.path.join(os.path.dirname(os.path.abspath(__file__)), '..')
 SRC = os.path.join(ROOT, 'game')
-DST = os.path.join(ROOT, 'site')
+DST = os.path.abspath(sys.argv[1]) if len(sys.argv) > 1 else os.path.join(ROOT, 'site')   # optional: another output folder
 KEEP_IN_SITE = {'.git', 'CNAME', '.gitignore', '.nojekyll', 'README.md', 'LICENSE'}
 
 # not part of the game
