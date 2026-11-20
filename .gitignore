@@ -1,0 +1,28 @@
+﻿# Local secrets written by `elevenlabs onboard` (the ElevenLabs key): never commit
+/.env*
+*.key
+
+# personal notes for Claude: stay on this computer
+CLAUDE.local.md
+.claude/settings.local.json
+
+node_modules/
+__pycache__/
+
+# the built website (GitHub Actions builds it from game/)
+/site/
+
+# original Nano Banana pictures and voice tryouts: big, only needed to re-cut art (kept locally)
+/art/raw/
+/art/voice_samples/
+/art/*.jpg
+/art/*.png
+
+# review sheets and old leftovers the game doesn't use
+_contact*.png
+game/assets/hydra_head_idle.png
+game/assets/sea_bg.gif
+*.jfif
+*.psd
+Thumbs.db
+.DS_Store

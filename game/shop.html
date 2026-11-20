@@ -1,0 +1,350 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Hermes' Shop</title>
+<link href="https://fonts.googleapis.com/css2?family=Cinzel:wght@700;900&family=Nunito:wght@700;900&display=swap" rel="stylesheet">
+<style>
+  :root { --ink: #2b1a0a; --cream: #fff8e6; --gold: #ffd43b; --god: #f2b705; --monster: #8e44ad; --friend: #2f9e44; }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; min-height: 100%; }
+  body { font-family: 'Nunito', sans-serif; color: var(--ink); background: #2a1a0e url(assets/shop/stall.jpg) center / cover no-repeat fixed; padding: 20px 16px 50px; }
+  body::before { content: ''; position: fixed; inset: 0; background: radial-gradient(ellipse at 50% 45%, rgba(30,15,5,.2), rgba(16,8,3,.62)); z-index: -1; }   /* Hermes' stall, a little darker at the edges */
+  button { font: inherit; cursor: pointer; }
+
+  header { max-width: 1200px; margin: 0 auto; display: flex; align-items: center; gap: 14px; flex-wrap: wrap; }
+  .pill { display: flex; align-items: center; gap: 10px; background: var(--cream); border: 4px solid var(--ink); border-radius: 30px; padding: 6px 18px 6px 8px; font-weight: 900; font-size: 26px; box-shadow: 0 5px 0 var(--ink); }
+  .coin { width: 32px; height: 32px; border-radius: 50%; background: radial-gradient(circle at 35% 35%, #fff3a0, #ffc400 45%, #b8860b); border: 3px solid #7a5600; flex: none; }
+  .camp { background: var(--cream); border: 4px solid var(--ink); border-radius: 30px; padding: 8px 18px; font-weight: 900; font-size: 20px; box-shadow: 0 5px 0 var(--ink); text-decoration: none; color: var(--ink); }
+  .tabs { margin-left: auto; display: flex; gap: 10px; }
+  .tab { background: #f0e2c4; border: 4px solid var(--ink); border-radius: 18px; padding: 8px 20px; font-family: 'Cinzel', serif; font-weight: 900; font-size: 22px; box-shadow: 0 5px 0 var(--ink); color: var(--ink); }
+  .tab.on { background: var(--gold); transform: translateY(2px); box-shadow: 0 3px 0 var(--ink); }
+  .tab small { font-family: 'Nunito'; font-size: 16px; }
+
+  h1 { font-family: 'Cinzel', serif; font-weight: 900; font-size: clamp(36px, 6vw, 64px); color: var(--gold); margin: 10px 0 0; text-align: center;
+       -webkit-text-stroke: 3px #6b4400; text-shadow: 0 6px 0 #6b4400, 0 0 30px rgba(255,212,59,.45); }
+  .view { max-width: 1200px; margin: 0 auto; }
+  .hidden { display: none !important; }
+
+  /* ---------- the shop ---------- */
+  .shop { display: grid; grid-template-columns: minmax(250px, 1fr) minmax(260px, 1fr) minmax(280px, 1fr); gap: 26px; align-items: center; margin-top: 4px; }
+  .keeper { display: flex; flex-direction: column; align-items: center; gap: 16px; }
+  .bubble { position: relative; background: var(--cream); border: 4px solid var(--ink); border-radius: 22px; padding: 16px 22px; font-weight: 900; font-size: 24px; text-align: center; max-width: 420px; box-shadow: 0 6px 0 var(--ink); min-height: 70px; display: flex; align-items: center; justify-content: center; gap: 12px; }
+  .bubble::after { content: ''; position: absolute; bottom: -22px; left: 50%; margin-left: -14px; border: 14px solid transparent; border-top: 18px solid var(--ink); }
+  .bubble .say { flex: none; }
+  .portrait { width: min(220px, 30vh); height: min(220px, 30vh); border-radius: 50%; border: 6px solid var(--ink); background: radial-gradient(circle at 50% 40%, #fff3c0, #ffc93b 60%, #d99a00); box-shadow: 0 8px 0 var(--ink), 0 0 50px rgba(255,212,59,.5);
+              display: flex; align-items: flex-end; justify-content: center; overflow: hidden; font-size: 110px; }
+  .portrait img { width: 92%; }
+  .counter { text-align: center; }
+  .pack-wrap { display: flex; flex-direction: column; align-items: center; gap: 18px; }
+  .buy { background: var(--gold); border: 5px solid var(--ink); border-radius: 40px; padding: 12px 34px; font-family: 'Cinzel', serif; font-weight: 900; font-size: 30px; box-shadow: 0 8px 0 var(--ink);
+         display: flex; align-items: center; gap: 12px; transition: transform .1s; }
+  .buy:hover:not(:disabled) { transform: translateY(-3px); }
+  .buy:active:not(:disabled) { transform: translateY(4px); box-shadow: 0 4px 0 var(--ink); }
+  .buy:disabled { filter: grayscale(.8); opacity: .7; cursor: default; }
+  .buy .coin { width: 28px; height: 28px; }
+  .progress { width: 320px; max-width: 100%; color: #fff; font-weight: 900; font-size: 20px; text-align: center; text-shadow: 0 2px 0 #000; }
+  .bar { height: 18px; background: rgba(0,0,0,.45); border: 3px solid var(--ink); border-radius: 12px; overflow: hidden; margin-top: 6px; }
+  .bar div { height: 100%; background: linear-gradient(#ffe066, #f2b705); width: 0; transition: width .6s; }
+
+  /* ---------- a card ---------- */
+  .card { --c: var(--god); position: relative; width: 300px; aspect-ratio: 5 / 7.4; border-radius: 22px; border: 5px solid var(--ink); background: var(--c); box-shadow: 0 10px 0 var(--ink), 0 14px 30px rgba(0,0,0,.4);
+          padding: 10px; display: flex; flex-direction: column; gap: 8px; }
+  .card.monster { --c: var(--monster); } .card.friend { --c: var(--friend); }
+  .card .name { background: var(--cream); border: 3px solid var(--ink); border-radius: 12px; text-align: center; font-family: 'Cinzel', serif; font-weight: 900; font-size: 24px; padding: 4px 6px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .card .pic { flex: 1; min-height: 0; border: 3px solid var(--ink); border-radius: 12px; background: radial-gradient(circle at 50% 35%, #fffbe8, #f6e3b0 70%); display: flex; align-items: flex-end; justify-content: center; overflow: hidden; font-size: 90px; position: relative; }
+  .card.monster .pic { background: radial-gradient(circle at 50% 35%, #f3e6ff, #c9a7e8 75%); }
+  .card.friend .pic { background: radial-gradient(circle at 50% 35%, #eaffea, #a9dcae 75%); }
+  .card .pic img { max-width: 100%; max-height: 96%; object-fit: contain; object-position: bottom; }
+  .card .kind { position: absolute; left: 50%; transform: translateX(-50%); bottom: 6px; background: var(--ink); color: #fff; font-size: 12px; font-weight: 900; letter-spacing: 2px; padding: 2px 10px; border-radius: 8px; }
+  .card .text { flex: none; min-height: 28%; max-height: 50%; background: var(--cream); border: 3px solid var(--ink); border-radius: 12px; padding: 8px 10px; font-size: 17px; line-height: 1.3; font-weight: 900; overflow: auto; }
+  .card .he { direction: rtl; color: #7a4a1a; font-size: 15px; margin-top: 6px; border-top: 2px dashed #d9c49a; padding-top: 6px; }
+  .card.big { width: min(360px, 86vw, calc((100vh - 230px) / 1.48)); }
+  .card.big .text { font-size: 20px; }
+  .card.big .name { font-size: 30px; }
+  .card-tools { display: flex; gap: 10px; justify-content: center; }
+  .round { background: var(--cream); border: 4px solid var(--ink); border-radius: 18px; padding: 6px 16px; font-weight: 900; font-size: 22px; box-shadow: 0 5px 0 var(--ink); }
+
+  /* the back of a card (the pack in the shop) */
+  .back { width: min(250px, calc((100vh - 300px) / 1.48)); aspect-ratio: 5 / 7.4; border-radius: 22px; border: 5px solid var(--ink); box-shadow: 0 10px 0 var(--ink), 0 0 60px rgba(255,212,59,.45);
+          background: radial-gradient(circle at 50% 50%, #ffe680 0 18%, transparent 19%),
+                      repeating-linear-gradient(45deg, #1e3a8a 0 14px, #1b3478 14px 28px);
+          display: flex; align-items: center; justify-content: center; position: relative; }
+  .back::before { content: ''; position: absolute; inset: 12px; border: 4px solid #ffd43b; border-radius: 14px; }
+  .back span { font-family: 'Cinzel', serif; font-weight: 900; font-size: 70px; color: #6b4400; position: relative; }
+  .float { animation: float 2.6s ease-in-out infinite; }
+  @keyframes float { 50% { transform: translateY(-12px) rotate(1.5deg); } }
+
+  /* ---------- the album ---------- */
+  .section h2 { font-family: 'Cinzel', serif; font-weight: 900; color: var(--gold); font-size: 32px; margin: 28px 0 12px; text-shadow: 0 3px 0 #000; }
+  .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(118px, 1fr)); gap: 14px; }
+  .slot { aspect-ratio: 5 / 7.4; border-radius: 16px; border: 4px solid var(--ink); }
+  .slot.mini { --c: var(--god); background: var(--c); padding: 6px; display: flex; flex-direction: column; gap: 5px; box-shadow: 0 6px 0 var(--ink); transition: transform .12s; cursor: pointer; }
+  .slot.mini:hover { transform: translateY(-5px) rotate(-1.5deg); }
+  .slot.mini.monster { --c: var(--monster); } .slot.mini.friend { --c: var(--friend); }
+  .slot.mini .nm.long { font-size: 12px; letter-spacing: -.3px; }
+  .slot.mini .pic { flex: 1; min-height: 0; background: var(--cream); border: 3px solid var(--ink); border-radius: 10px; display: flex; align-items: flex-end; justify-content: center; overflow: hidden; font-size: 54px; }
+  .slot.mini .pic img { max-width: 100%; max-height: 95%; object-fit: contain; object-position: bottom; }
+  .slot.mini .nm { background: var(--cream); border: 3px solid var(--ink); border-radius: 8px; text-align: center; font-family: 'Cinzel', serif; font-weight: 900; font-size: 15px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; padding: 1px 4px; }
+  .slot.empty { background: repeating-linear-gradient(45deg, rgba(30,58,138,.55) 0 10px, rgba(27,52,120,.55) 10px 20px); border-style: dashed; border-color: rgba(255,212,59,.6);
+                display: flex; align-items: center; justify-content: center; font-family: 'Cinzel', serif; font-weight: 900; font-size: 50px; color: rgba(255,212,59,.6); }
+
+  /* ---------- the overlay (opening a card / looking at one) ---------- */
+  .overlay { position: fixed; inset: 0; background: rgba(10,6,2,.82); display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 18px; z-index: 10; padding: 16px; }
+  .rays { position: absolute; width: 900px; height: 900px; max-width: 160vmax; background: repeating-conic-gradient(rgba(255,212,59,.22) 0 10deg, transparent 10deg 20deg); border-radius: 50%;
+          mask: radial-gradient(circle, #000 20%, transparent 65%); -webkit-mask: radial-gradient(circle, #000 20%, transparent 65%); animation: spin 14s linear infinite; pointer-events: none; }
+  @keyframes spin { to { transform: rotate(360deg); } }
+  .flip { position: relative; perspective: 1400px; }
+  .flip-inner { position: relative; transform-style: preserve-3d; transition: transform .8s cubic-bezier(.3,1.4,.5,1); }
+  .flip-inner.turned { transform: rotateY(180deg); }
+  .flip-inner > * { backface-visibility: hidden; -webkit-backface-visibility: hidden; }
+  .flip-inner > .card { transform: rotateY(180deg); }
+  .flip-inner > .back { position: absolute; inset: 0; width: 100%; height: auto; }
+  .shake { animation: shake .5s ease-in-out 2; }
+  @keyframes shake { 20% { transform: rotate(-6deg) scale(1.03); } 40% { transform: rotate(5deg); } 60% { transform: rotate(-4deg) scale(1.05); } 80% { transform: rotate(3deg); } }
+  .newtag { font-family: 'Cinzel', serif; font-weight: 900; font-size: 38px; color: var(--gold); -webkit-text-stroke: 2px #6b4400; text-shadow: 0 4px 0 #6b4400; position: relative; animation: pop .5s cubic-bezier(.3,1.6,.5,1); }
+  @keyframes pop { from { transform: scale(.3); opacity: 0; } }
+  .close { background: var(--gold); border: 5px solid var(--ink); border-radius: 30px; padding: 10px 30px; font-family: 'Cinzel', serif; font-weight: 900; font-size: 26px; box-shadow: 0 6px 0 var(--ink); position: relative; }
+
+  /* ---------- the shelf (gear) ---------- */
+  .shelf { background: linear-gradient(#7a4a24, #5b3418); border: 5px solid var(--ink); border-radius: 22px; box-shadow: 0 8px 0 var(--ink); padding: 12px 14px 16px; display: flex; flex-direction: column; gap: 12px; }
+  .shelf h2 { margin: 0; font-family: 'Cinzel', serif; font-weight: 900; color: var(--gold); font-size: 24px; text-align: center; text-shadow: 0 2px 0 #000; }
+  .stabs { display: flex; gap: 6px; justify-content: center; }
+  .stab { background: #f0e2c4; border: 3px solid var(--ink); border-radius: 12px; padding: 3px 12px; font-weight: 900; font-size: 16px; box-shadow: 0 3px 0 var(--ink); }
+  .stab.on { background: var(--gold); transform: translateY(2px); box-shadow: 0 1px 0 var(--ink); }
+  #items { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; max-height: min(430px, calc(100vh - 290px)); overflow-y: auto; padding: 4px 4px 8px; }
+  .item { background: var(--cream); border: 3px solid var(--ink); border-radius: 14px; padding: 6px 5px 7px; display: flex; flex-direction: column; align-items: center; gap: 4px; box-shadow: 0 4px 0 rgba(0,0,0,.45); text-align: center; }
+  .item .ipic { width: 100%; aspect-ratio: 1; border-radius: 10px; border: 2px solid var(--ink); background: radial-gradient(circle at 50% 40%, #fffbe8, #f6d98a 75%); display: flex; align-items: center; justify-content: center; cursor: pointer; }
+  .item .ipic img, .item .ipic canvas { max-width: 80%; max-height: 80%; }
+  .item.using { background: #fff3c0; }
+  .item.using .ipic { box-shadow: 0 0 0 3px var(--gold), 0 0 14px var(--gold); }
+  .item h3 { margin: 0; font-family: 'Nunito', sans-serif; font-weight: 900; font-size: 13px; line-height: 1.1; min-height: 2.2em; display: flex; align-items: center; }
+  .item button { border: 3px solid var(--ink); border-radius: 16px; padding: 1px 8px; font-weight: 900; font-size: 15px; box-shadow: 0 3px 0 var(--ink); display: inline-flex; align-items: center; gap: 4px; background: var(--gold); }
+  .item button .coin { width: 16px; height: 16px; border-width: 2px; }
+  .item button.use { background: #9bd8ff; } .item button.off { background: #d3f9d8; }
+  .item.legend { background: linear-gradient(#fff6c8, #ffe08a); }
+  .item.legend h3::before { content: '★ '; color: #d99a00; }
+
+  @media (max-width: 1000px) { .shop { grid-template-columns: 1fr 1fr; } .shelf { grid-column: 1 / -1; } }
+  @media (max-width: 760px) { .shop { grid-template-columns: 1fr; } .tabs { margin-left: 0; } }
+</style>
+</head>
+<body>
+  <header>
+    <a class="camp" href="index.html">⌂ Camp</a>
+    <div class="pill"><div class="coin"></div><span id="coins">0</span></div>
+    <nav class="tabs">
+      <button class="tab on" id="tab-shop">Shop</button>
+      <button class="tab" id="tab-album">Album <small id="tab-count"></small></button>
+    </nav>
+  </header>
+
+  <h1 id="title">Hermes' Shop</h1>
+
+  <!-- the shop: Hermes and the mystery card -->
+  <section class="view" id="view-shop">
+    <div class="shop">
+      <div class="keeper">
+        <div class="bubble"><span id="hermes-says">Welcome to my shop!</span><button class="round say" id="hermes-say" title="Listen">🔊</button></div>
+        <div class="portrait" id="portrait">🪽</div>
+      </div>
+      <div class="pack-wrap">
+        <div class="back float" id="pack"><span>⚡</span></div>
+        <button class="buy" id="buy">Buy a card <div class="coin"></div><span id="price"></span></button>
+        <div class="progress"><span id="progress-text"></span><div class="bar"><div id="bar"></div></div></div>
+      </div>
+      <div class="shelf"><h2>Hermes' Shelf</h2><div class="stabs"><button class="stab on" data-sec="pet">Pets</button><button class="stab" data-sec="head">Hats</button><button class="stab" data-sec="trail">Magic</button></div><div id="items"></div></div>
+    </div>
+  </section>
+
+  <!-- the album -->
+  <section class="view hidden" id="view-album"></section>
+
+  <div class="overlay hidden" id="overlay"></div>
+
+<script src="common.js"></script>
+<script src="phrases.js"></script>
+<script>
+// ---------- saved cards ----------
+const owned = () => Save.get().cards || [];
+// cards with a 7th field are won in a game (e.g. 'voyage'), not sold; the price counts only the cards bought here
+const FOR_SALE = CARDS.filter(c => !c[6]);
+const boughtCount = () => FOR_SALE.filter(c => owned().includes(c[0])).length;
+function buyCard() {
+  const s = Save.get(); s.cards = s.cards || [];
+  const left = FOR_SALE.filter(c => !s.cards.includes(c[0]));
+  const price = cardPrice(boughtCount());
+  if (!left.length || s.coins < price) return null;
+  const c = left[Math.floor(Math.random() * left.length)];
+  s.coins -= price; s.cards.push(c[0]); Save.set(s);
+  return c;
+}
+
+// ---------- pictures: the card's own art, else art from the games, else the emoji ----------
+function picHTML(c) {
+  const own = 'assets/cards/' + c[0] + '.png', fb = CARD_ART_FALLBACK[c[0]];
+  const src = assetExists(own) ? own : fb && assetExists(fb) ? fb : null;
+  return src ? `<img src="${src}" alt="${c[1]}">` : c[3];
+}
+const KIND = { god: 'GOD', monster: 'MONSTER', friend: 'FRIEND' };
+function cardHTML(c, big) {
+  return `<div class="card ${c[2]}${big ? ' big' : ''}">
+    <div class="name">${c[1]}</div>
+    <div class="pic">${picHTML(c)}<span class="kind">${KIND[c[2]]}</span></div>
+    <div class="text">${c[4]}<div class="he hidden">${c[5]}</div></div>
+  </div>`;
+}
+const toolsHTML = `<div class="card-tools"><button class="round" data-act="read" title="Listen">🔊</button><button class="round" data-act="he">עברית</button></div>`;
+function wireTools(root, c) {
+  root.querySelector('[data-act=read]').onclick = () => say(c[4]);
+  root.querySelector('[data-act=he]').onclick = () => root.querySelector('.he').classList.toggle('hidden');
+}
+
+// ---------- Hermes talks ----------
+function hermes(line, speak = true) {
+  document.getElementById('hermes-says').textContent = line;
+  if (speak) say(line, 'hermes');
+}
+
+// ---------- sounds ----------
+const sfx = {
+  buy: () => { tone(988, 988, .06, 'square', .04); setTimeout(() => tone(1319, 1319, .12, 'square', .04), 60); },
+  shake: () => [0, 120, 240, 360].forEach(t => setTimeout(() => tone(200, 260, .06, 'triangle', .06), t)),
+  reveal: () => [523, 659, 784, 1047, 1319].forEach((f, i) => setTimeout(() => tone(f, f, .18, 'square', .05), i * 90)),
+  no: () => { tone(300, 200, .12, 'square', .06); setTimeout(() => tone(220, 150, .18, 'square', .06), 110); },
+  page: () => tone(800, 1200, .08, 'triangle', .04),
+};
+
+// ---------- screen ----------
+const $ = id => document.getElementById(id);
+function refresh() {
+  const s = Save.get(), n = owned().length, nb = boughtCount(), all = nb >= FOR_SALE.length;
+  $('coins').textContent = s.coins;
+  $('price').textContent = all ? '-' : cardPrice(nb);
+  $('tab-count').textContent = `${n}/${CARDS.length}`;
+  $('progress-text').textContent = n >= CARDS.length ? 'Your album is full!' : `Album: ${n} / ${CARDS.length} cards`;
+  $('bar').style.width = (n / CARDS.length * 100) + '%';
+  $('buy').disabled = all;
+  drawShelf();
+}
+function show(view) {
+  $('view-shop').classList.toggle('hidden', view !== 'shop');
+  $('view-album').classList.toggle('hidden', view !== 'album');
+  $('tab-shop').classList.toggle('on', view === 'shop');
+  $('tab-album').classList.toggle('on', view === 'album');
+  $('title').textContent = view === 'shop' ? "Hermes' Shop" : 'My Album';
+  if (view === 'album') drawAlbum();
+  sfx.page();
+}
+
+function drawAlbum() {
+  const have = owned(), groups = [['god', 'Gods'], ['monster', 'Monsters'], ['friend', 'Friends']];
+  $('view-album').innerHTML = groups.map(([k, title]) => {
+    const list = CARDS.filter(c => c[2] === k);
+    return `<div class="section"><h2>${title} <small>${list.filter(c => have.includes(c[0])).length}/${list.length}</small></h2><div class="grid">` +
+      list.map(c => have.includes(c[0])
+        ? `<div class="slot mini ${c[2]}" data-id="${c[0]}"><div class="pic">${picHTML(c)}</div><div class="nm${c[1].length > 9 ? ' long' : ''}">${c[1]}</div></div>`
+        : c[6] === 'voyage' ? `<div class="slot empty" title="Win it on The Voyage of Odysseus">⛵</div>` : `<div class="slot empty">?</div>`).join('') + '</div></div>';
+  }).join('');
+  $('view-album').querySelectorAll('.slot.mini').forEach(el => el.onclick = () => openCard(CARDS.find(c => c[0] === el.dataset.id)));
+}
+
+// look at one card from the album
+function openCard(c) {
+  const o = $('overlay');
+  o.innerHTML = `<div class="rays"></div><div style="position:relative">${cardHTML(c, true)}</div>${toolsHTML}<button class="close">Close</button>`;
+  wireTools(o, c);
+  o.querySelector('.close').onclick = () => o.classList.add('hidden');
+  o.classList.remove('hidden'); sfx.page();
+}
+
+// buy and open a new card: the pack shakes, then flips over
+function buy() {
+  const s = Save.get();
+  if (boughtCount() >= FOR_SALE.length) return hermes(SHOP_LINES[3]);
+  if (s.coins < cardPrice(boughtCount())) {
+    sfx.no(); hermes(SHOP_LINES[2]);
+    $('buy').animate([{ transform: 'translateX(0)' }, { transform: 'translateX(-10px)' }, { transform: 'translateX(10px)' }, { transform: 'translateX(0)' }], { duration: 300 });
+    return;
+  }
+  const c = buyCard(); if (!c) return;
+  sfx.buy(); refresh();
+  const o = $('overlay');
+  o.innerHTML = `<div class="rays"></div>
+    <div class="reveal" style="position:relative"><div class="flip"><div class="flip-inner">${cardHTML(c, true)}<div class="back"><span>⚡</span></div></div></div></div>
+    <div class="after hidden" style="display:flex;align-items:center;gap:14px;position:relative">${toolsHTML}<button class="close">Add to my album</button></div>`;
+  o.classList.remove('hidden');
+  const inner = o.querySelector('.flip-inner'), after = o.querySelector('.after');
+  inner.classList.add('shake'); sfx.shake();
+  setTimeout(() => {
+    inner.classList.remove('shake'); inner.classList.add('turned'); sfx.reveal();
+    hermes(SHOP_LINES[1]);
+    const tag = document.createElement('div'); tag.className = 'newtag'; tag.textContent = 'New card!';
+    tag.style.cssText = 'position:absolute;top:-30px;left:50%;margin-left:-110px;width:220px;text-align:center;transform:rotate(-6deg);z-index:2';
+    o.querySelector('.reveal').appendChild(tag);
+    setTimeout(() => after.classList.remove('hidden'), 700);
+  }, 1100);
+  wireTools(o, c);
+  o.querySelector('.close').onclick = () => {
+    o.classList.add('hidden');
+    if (boughtCount() >= FOR_SALE.length) hermes(SHOP_LINES[3]);
+  };
+}
+
+// ---------- the shelf: things she can buy and use in the games ----------
+let shelfSection = 'pet';
+function drawShelf() {
+  const s = Save.get(), have = s.items || [], eq = s.equip || {};
+  $('items').innerHTML = Object.entries(GEAR_ITEMS).filter(([, it]) => it[1] === shelfSection).map(([id, [name, kind, price, pic0]]) => {
+    let pic = pic0 && Gear.picOf(id);
+    const own = have.includes(id), using = eq[kind] === id;
+    const btn = !own ? `<button data-buy="${id}"><span class="coin"></span>${price}</button>`
+      : using ? `<button class="off" data-use="${id}">✓ On</button>` : `<button class="use" data-use="${id}">Use</button>`;
+    const [w, h] = Gear.canvasSize(id), art = `assets/shop/${id}_front.png`;
+    if (!pic && assetExists(art)) pic = art;   // Nano Banana art for the hats, when it exists
+    return `<div class="item${using ? ' using' : ''}${price >= 500 ? ' legend' : ''}"><div class="ipic" data-say="${id}" title="${name}">${pic ? `<img src="${pic}" alt="">` : `<canvas width="${w}" height="${h}" data-draw="${id}"></canvas>`}</div>
+      <h3>${name}</h3>${btn}</div>`;
+  }).join('');
+  // pictures drawn by code; trail bits are white, so they get their first colour here
+  $('items').querySelectorAll('canvas[data-draw]').forEach(c => {
+    const id = c.dataset.draw, x = c.getContext('2d');
+    Gear.draw[id](x);
+    if (GEAR_ITEMS[id][1] === 'trail') { x.globalCompositeOperation = 'source-in'; x.fillStyle = '#' + GEAR_ITEMS[id][5].colors[0].toString(16).padStart(6, '0'); x.fillRect(0, 0, c.width, c.height); }
+  });
+  $('items').querySelectorAll('[data-say]').forEach(el => el.onclick = () => hermes(GEAR_ITEMS[el.dataset.say][4]));
+  $('items').querySelectorAll('[data-buy]').forEach(el => el.onclick = () => buyItem(el.dataset.buy));
+  $('items').querySelectorAll('[data-use]').forEach(el => el.onclick = () => useItem(el.dataset.use));
+}
+document.querySelectorAll('.stab').forEach(b => b.onclick = () => {
+  shelfSection = b.dataset.sec; document.querySelectorAll('.stab').forEach(x => x.classList.toggle('on', x === b)); sfx.page(); drawShelf();
+});
+function buyItem(id) {
+  const [, kind, price] = GEAR_ITEMS[id], s = Save.get();
+  if (s.coins < price) { sfx.no(); return hermes(SHOP_LINES[2]); }
+  s.coins -= price; s.items = [...(s.items || []), id]; s.equip = { ...(s.equip || {}), [kind]: id }; Save.set(s);
+  sfx.reveal(); hermes(GEAR_ITEMS[id][4]); refresh();
+}
+function useItem(id) {
+  const kind = GEAR_ITEMS[id][1], s = Save.get(); s.equip = s.equip || {};
+  if (s.equip[kind] === id) delete s.equip[kind]; else s.equip[kind] = id;
+  Save.set(s); sfx.page(); refresh();
+}
+
+// ---------- start ----------
+loadManifest().then(() => {
+  const hp = 'assets/hermes/hermes.png';
+  if (assetExists(hp)) $('portrait').innerHTML = `<img src="${hp}" alt="Hermes">`;
+  refresh();
+  if (boughtCount() >= FOR_SALE.length) hermes(SHOP_LINES[3], false);
+});
+$('buy').onclick = buy;
+$('hermes-say').onclick = () => say($('hermes-says').textContent, 'hermes');
+$('tab-shop').onclick = () => show('shop');
+$('tab-album').onclick = () => show('album');
+document.addEventListener('keydown', e => {
+  if (e.key === 'Escape') { if (!$('overlay').classList.contains('hidden')) $('overlay').classList.add('hidden'); else location.href = 'index.html'; }
+});
+</script>
+</body>
+</html>

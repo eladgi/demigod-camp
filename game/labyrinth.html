@@ -1,0 +1,868 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>The Labyrinth</title>
+<link href="https://fonts.googleapis.com/css2?family=Cinzel:wght@700;900&family=Nunito:wght@700;900&display=swap" rel="stylesheet">
+<style>
+  html, body { margin: 0; height: 100%; background: #0d1b2a; overflow: hidden; }
+  #game { width: 100%; height: 100%; }
+</style>
+<script src="https://cdn.jsdelivr.net/npm/phaser@3.80.1/dist/phaser.min.js"></script>
+<script src="common.js"></script>
+<script src="phrases.js"></script>
+</head>
+<body>
+<div id="game"></div>
+<script>
+// =====================================================================
+//  CONTENT  (words come from common.js: WORDS)
+// =====================================================================
+const COLORS = [ // [english, hex, hebrew masc (key), hebrew fem (door)]
+  ['red', 0xe84545, 'האדום', 'האדומה'], ['blue', 0x3b82f6, 'הכחול', 'הכחולה'],
+  ['green', 0x3fbf6f, 'הירוק', 'הירוקה'], ['yellow', 0xffd43b, 'הצהוב', 'הצהובה'],
+  ['orange', 0xff8a1f, 'הכתום', 'הכתומה'], ['purple', 0x9b5de5, 'הסגול', 'הסגולה'],
+  ['pink', 0xff7eb6, 'הוורוד', 'הוורודה'], ['black', 0x2b2b2b, 'השחור', 'השחורה'], ['white', 0xf5f5f5, 'הלבן', 'הלבנה'],
+];
+const DIRS = { left: { text: 'Go left!', he: 'שמאלה!' }, right: { text: 'Go right!', he: 'ימינה!' }, up: { text: 'Go up!', he: 'למעלה!' } };
+const OBJECTS = {
+  table:  { he: 'שולחן', rels: ['on', 'under'] },
+  chest:  { he: 'תיבה', rels: ['in', 'next to'] },
+  column: { he: 'עמוד', rels: ['behind', 'next to'] },
+  tree:   { he: 'עץ', rels: ['behind', 'next to'] },
+};
+const REL_HE = { on: 'על ה', under: 'מתחת ל', in: 'בתוך ה', 'next to': 'ליד ה', behind: 'מאחורי ה' };
+const FLOORS = [
+  { name: 'Floor 1', sub: 'Picture doors',        chambers: ['doors', 'doors', 'doors', 'doors'] },
+  { name: 'Floor 2', sub: 'Keys and colors',      chambers: ['keys', 'keys', 'keys'] },
+  { name: 'Floor 3', sub: 'Left, right or up?',   chambers: ['fork', 'fork', 'fork', 'fork', 'fork', 'fork'] },
+  { name: 'Floor 4', sub: 'Where is the key?',    chambers: ['prep', 'prep', 'prep', 'prep'] },
+  { name: 'Floor 5', sub: 'Escape the Minotaur!', chambers: ['fork', 'doors', 'fork', 'keys', 'fork', 'prep', 'fork'], minotaur: true },
+];
+
+// Art made with Nano Banana. Every name falls back to a drawn placeholder until the file exists.
+const OBJ_ART = ['coin', 'gem', 'chest_closed', 'chest_open', 'key_white', 'scroll', 'amphora', 'owl_statue',
+                 'key_gold', 'door_wood', 'door_gold', 'stairs', 'table', 'column', 'tree', 'torch'];
+const FRAME = 256;                              // sprite-sheet frame size (tools/build_walk_sheet.py)
+const WALK_ROWS = ['down', 'left', 'right', 'up'];
+
+// =====================================================================
+//  WORLD
+// =====================================================================
+const W = 1280, H = 720, T = 64, COLS = 20;
+const SPEED = 250, MINO_SPEED = 140;
+const HEIGHTS = { doors: 6, keys: 7, fork: 7, prep: 7 };
+const FOG_ROOM = 2.3, FOG_DARK = 1.0;       // rooms light up; corridors stay dark
+
+// One floor = a tile grid (1 wall, 0 floor) + things placed in it. Chambers stack from the start (bottom) to the stairs (top).
+function buildFloor(def) {
+  const rows = 1 + 4 + def.chambers.reduce((a, c) => a + 1 + HEIGHTS[c], 0) + 1 + 4;
+  const g = Array.from({ length: rows }, () => Array(COLS).fill(1));
+  const carve = (x, y) => { if (x > 0 && x < COLS - 1 && y > 0 && y < rows - 1) g[y][x] = 0; };
+  const rect = (x1, y1, x2, y2) => { for (let y = y1; y <= y2; y++) for (let x = x1; x <= x2; x++) carve(x, y); };
+  const ents = [], chambers = [];
+  const R = Phaser.Math.Between, pick = a => a[R(0, a.length - 1)], shuffle = a => Phaser.Utils.Array.Shuffle(a.slice());
+  const avoid = (list, bad) => { const ok = list.filter(x => !bad(x)); return pick(ok.length ? ok : list); };
+  const last = {};   // the previous instruction of each kind, so the same one never comes twice in a row
+  const freeTiles = (x1, y1, x2, y2, avoid) => { const t = []; for (let y = y1; y <= y2; y++) for (let x = x1; x <= x2; x++) if (!avoid.some(a => a[0] === x && a[1] === y)) t.push([x, y]); return shuffle(t); };
+
+  let wall = rows - 1 - 5;
+  rect(6, rows - 5, 13, rows - 2);
+  const start = { x: 10, y: rows - 3 };
+  let ex = 10, hall = false; carve(ex, wall);
+
+  def.chambers.forEach((type, i) => {
+    const h = HEIGHTS[type], top = wall - h - 1, y1 = top + 1, y2 = wall - 1;
+    const ch = { i, type, top, bottom: wall, entryX: ex, step: 0, done: false, mistakes: 0 };
+    const doorXs = [4, 10, 16];
+    if (type === 'doors') {
+      rect(1, y1, 18, y2);
+      const nouns = shuffle(WORDS.filter(w => w !== last.noun)).slice(0, 3), c = R(0, 2); last.noun = nouns[c];
+      nouns.forEach((n, k) => { carve(doorXs[k], top); ents.push({ kind: 'door', style: 'pic', noun: n, x: doorXs[k], y: top, ch: i, correct: k === c }); });
+      ex = doorXs[c];
+      freeTiles(2, y1 + 1, 17, y2 - 1, [[ch.entryX, y2]]).slice(0, 2).forEach(([x, y]) => ents.push({ kind: 'coin', x, y }));
+    }
+    if (type === 'keys') {
+      rect(1, y1, 18, y2);
+      const cols = shuffle(COLORS).slice(0, 3), target = avoid(cols, c => c === last.color), doorCols = shuffle(cols); last.color = target;
+      doorCols.forEach((col, k) => { carve(doorXs[k], top); ents.push({ kind: 'door', style: 'color', color: col, x: doorXs[k], y: top, ch: i }); });
+      freeTiles(2, y1 + 2, 17, y2 - 1, [[ch.entryX, y2], [ch.entryX, y2 - 1]]).slice(0, 3).forEach(([x, y], k) => ents.push({ kind: 'key', color: cols[k], x, y, ch: i }));
+      ch.target = target;
+      ex = doorXs[doorCols.indexOf(target)];
+    }
+    if (type === 'fork') {
+      // one junction; every branch has the same shape (sideways, then up) and only one reaches the top
+      const jr = y1 + 3, jx = ex;
+      rect(jx, jr, jx, y2);
+      const opts = ['up']; if (jx - 5 >= 2) opts.push('left'); if (jx + 5 <= 17) opts.push('right');
+      const dir = avoid(opts, o => o === last.dir), wrong = []; last.dir = dir;
+      for (const o of opts) {
+        const ok = o === dir;
+        if (o === 'up') {
+          if (ok) { rect(jx, y1, jx, jr); carve(jx, top); }
+          else { rect(jx, y1 + 1, jx, jr); wrong.push([jx, y1 + 1, jx, jr - 2]); }
+        } else {
+          const s = o === 'left' ? -1 : 1, bx = jx + 5 * s;
+          rect(Math.min(bx, jx), jr, Math.max(bx, jx), jr);
+          if (ok) { rect(bx, y1, bx, jr); carve(bx, top); }
+          else { rect(bx, y1 + 1, bx, jr); wrong.push([Math.min(jx + 2 * s, bx), jr, Math.max(jx + 2 * s, bx), jr], [bx, y1 + 1, bx, jr]); }
+        }
+      }
+      ch.wrong = wrong; ch.dir = dir; ch.junction = { x: jx, y: jr };
+      ex = dir === 'up' ? jx : jx + (dir === 'left' ? -5 : 5);
+      // coins only on the right path
+      ents.push({ kind: 'coin', x: ex, y: y1 + 1 });
+    }
+    if (type === 'prep') {
+      rect(1, y1, 18, y2);
+      const objs = shuffle(Object.keys(OBJECTS)).slice(0, 2);
+      objs.forEach((o, k) => {
+        const ox = k ? 14 : 5, oy = y1 + 3;
+        ents.push({ kind: 'obj', obj: o, x: ox, y: oy });
+        OBJECTS[o].rels.forEach(r => ents.push({ kind: 'pkey', obj: o, rel: r, x: ox, y: oy, ch: i, correct: false }));
+      });
+      const keys = ents.filter(e => e.kind === 'pkey' && e.ch === i);
+      const t = avoid(keys, k => k.rel === last.rel || k.obj + k.rel === last.spot); t.correct = true; last.rel = t.rel; last.spot = t.obj + t.rel;
+      carve(10, top); ents.push({ kind: 'door', style: 'gold', x: 10, y: top, ch: i });
+      ex = 10;
+    }
+    // a hall along the bottom of this area, so any door of the previous room leads somewhere 
+    if (hall) rect(4, y2, 16, y2);
+    hall = type === 'doors' || type === 'keys';
+    if (type !== 'fork') { ents.push({ kind: 'torch', x: 2, y: top }); ents.push({ kind: 'torch', x: 17, y: top }); ents.push({ kind: 'decor', art: pick(['amphora', 'owl_statue', 'scroll']), x: pick([1, 18]), y: y1 }); }
+    chambers.push(ch);
+    wall = top;
+  });
+  rect(6, wall - 4, 13, wall - 1); carve(ex, wall); rect(Math.min(ex, 10), wall - 1, Math.max(ex, 10), wall - 1);
+  if (hall) rect(4, wall - 1, 16, wall - 1);
+  ents.push({ kind: 'stairs', x: 10, y: wall - 3 });
+  return { grid: g, rows, ents, chambers, start };
+}
+
+// =====================================================================
+//  SOUNDS
+// =====================================================================
+const sfx = {
+  coin: () => { tone(988, 988, .06, 'square', .04); setTimeout(() => tone(1319, 1319, .12, 'square', .04), 60); },
+  gem:  () => [1047, 1319, 1568].forEach((f, i) => setTimeout(() => tone(f, f, .1, 'triangle', .07), i * 60)),
+  key:  () => tone(660, 1320, .15, 'triangle', .09),
+  door: () => { tone(200, 120, .25, 'sawtooth', .07); setTimeout(() => tone(500, 900, .15, 'triangle', .07), 120); },
+  wrong: () => { tone(300, 200, .12, 'square', .07); setTimeout(() => tone(220, 150, .18, 'square', .07), 110); },
+  crumble: () => { tone(200, 40, .5, 'sawtooth', .1); setTimeout(() => tone(120, 30, .4, 'square', .06), 120); },
+  good: () => [659, 988].forEach((f, i) => setTimeout(() => tone(f, f, .12, 'square', .06), i * 90)),
+  perfect: () => [659, 880, 1175].forEach((f, i) => setTimeout(() => tone(f, f, .12, 'square', .06), i * 80)),
+  win:  () => [523, 659, 784, 1047].forEach((f, i) => setTimeout(() => tone(f, f, .25, 'square', .07), i * 140)),
+  step: () => tone(160, 120, .04, 'triangle', .02),
+  // Minotaur (volume 0..1 = how close it is)
+  roar:  (v = 1) => { tone(120, 55, .8, 'sawtooth', .14 * v); tone(170, 80, .8, 'square', .05 * v); },
+  growl: (v = 1) => { tone(90, 70, .5, 'sawtooth', .08 * v); },
+  stomp: (v = 1) => { tone(70, 35, .14, 'square', .12 * v); },
+  snore: (v = 1) => { tone(70, 110, .9, 'sawtooth', .035 * v); setTimeout(() => tone(110, 60, 1.1, 'sawtooth', .025 * v), 1000); },
+};
+
+// =====================================================================
+//  SCENE
+// =====================================================================
+class Maze extends Phaser.Scene {
+  constructor() { super('maze'); }
+  init(data) { this.floorIndex = data.floor ?? 0; this.coins = data.coins ?? 0; this.showTitle = data.title ?? true; }
+
+  preload() {
+    Gear.preload(this);   // pet / crown from Hermes' Shop
+    this.load.on('loaderror', () => {});
+    const img = (k, p) => { if (assetExists(p)) this.load.image(k, p); };
+    const sheet = (k, p) => { if (assetExists(p)) this.load.spritesheet(k, p, { frameWidth: FRAME, frameHeight: FRAME }); };
+    img('hero', 'assets/hero.png');
+    WORDS.forEach(n => img(iconKey(n[0]), iconFile(n[0])));
+    OBJ_ART.forEach(n => img('art_' + n, 'assets/objects/' + n + '.png'));
+    img('art_floor', 'assets/tiles/floor.png');
+    img('art_wall', 'assets/tiles/wall.png');
+    img('art_ariadne', 'assets/ariadne.png');
+    img('art_minotaur_sleep', 'assets/minotaur_sleep.png');
+    sheet('hero_walk', 'assets/sprites/hero_walk.png');
+    sheet('mino_walk', 'assets/sprites/minotaur_walk.png');
+  }
+
+  has(k) { return this.textures.exists(k); }
+  tex(name) { return this.has('art_' + name) ? 'art_' + name : 'gen_' + name; }
+  // a colored key: the white key picture tinted, or the drawn placeholder
+  keyImage(x, y, color) {
+    if (this.has('art_key_white')) { const im = this.add.image(x, y, 'art_key_white'); if (color[0] !== 'white') im.setTint(color[1]); return im; }
+    return this.add.image(x, y, 'gen_key_' + color[0]);
+  }
+  fit(img, w, h) { img.setScale(Math.min(w / img.width, h / img.height)); return img; }
+
+  // ---------- placeholder art for anything not made yet ----------
+  makeTextures() {
+    if (this.has('gen_coin')) return;
+    const g = this.make.graphics({ add: false });
+    g.fillStyle(0xffffff, 0).fillRect(0, 0, 4, 4).generateTexture('px', 4, 4).clear();
+    // tiles (only used when there is no art)
+    g.fillStyle(0xc9b48c).fillRect(0, 0, 64, 64).fillStyle(0xb9a37a).fillRect(0, 0, 64, 3).fillRect(0, 0, 3, 64).fillRect(0, 31, 64, 2).fillRect(31, 0, 2, 31).fillRect(15, 33, 2, 31).fillRect(47, 33, 2, 31);
+    g.fillStyle(0xd8c49c).fillRect(6, 6, 20, 4).fillRect(38, 40, 14, 3);
+    g.fillStyle(0x3b2e24).fillRect(64, 0, 64, 64).fillStyle(0x6e5a48).fillRect(64, 0, 64, 44).fillStyle(0x857059).fillRect(64, 0, 64, 6);
+    g.fillStyle(0x5a4838).fillRect(64, 20, 64, 2).fillRect(95, 0, 2, 20).fillRect(78, 22, 2, 22).fillRect(110, 22, 2, 22);
+    g.generateTexture('gen_tiles', 128, 64).clear();
+    const door = (key, panel, trim) => {
+      g.fillStyle(0x2b1a0a).fillRect(0, 0, 64, 64).fillStyle(trim).fillRect(3, 0, 58, 64).fillStyle(panel).fillRect(8, 6, 48, 58);
+      g.fillStyle(0x000000, 0.15).fillRect(20, 6, 3, 58).fillRect(41, 6, 3, 58);
+      g.fillStyle(0x2b1a0a).fillCircle(48, 38, 4).generateTexture(key, 64, 64).clear();
+    };
+    door('gen_door_wood', 0x9a6a3a, 0x5b3a1e); door('gen_door_gold', 0xffc93b, 0x9a6a00);
+    const key = (k, col) => {
+      g.fillStyle(0x2b1a0a).fillCircle(12, 14, 12).fillRect(16, 10, 30, 8).fillRect(36, 16, 6, 10).fillRect(44, 16, 5, 8);
+      g.fillStyle(col).fillCircle(12, 14, 9).fillRect(16, 12, 28, 4).fillRect(37, 16, 4, 8).fillRect(44, 16, 3, 6);
+      g.fillStyle(0x2b1a0a).fillCircle(12, 14, 4).generateTexture(k, 52, 30).clear();
+    };
+    COLORS.forEach(c => key('gen_key_' + c[0], c[1])); key('gen_key_gold', 0xffd43b);
+    g.fillStyle(0x7a5600).fillCircle(14, 14, 14).fillStyle(0xffc400).fillCircle(14, 14, 11).fillStyle(0xfff3a0).fillCircle(10, 10, 4).generateTexture('gen_coin', 28, 28).clear();
+    g.fillStyle(0x0a3d5c).fillTriangle(16, 0, 32, 14, 0, 14).fillTriangle(0, 14, 32, 14, 16, 34);
+    g.fillStyle(0x4fd1ff).fillTriangle(16, 3, 28, 14, 4, 14).fillStyle(0x1aa3e0).fillTriangle(4, 15, 28, 15, 16, 30).generateTexture('gen_gem', 32, 34).clear();
+    for (let k = 0; k < 4; k++) g.fillStyle(0x2b1a0a).fillRect(4, 8 + k * 14, 56, 12).fillStyle(0xe8dcc0 - k * 0x0a0a0a).fillRect(6 + k * 4, 8 + k * 14, 52 - k * 8, 10);
+    g.generateTexture('gen_stairs', 64, 64).clear();
+    g.fillStyle(0x2b1a0a).fillRect(10, 18, 10, 52).fillRect(110, 18, 10, 52).fillStyle(0x7a4a24).fillRect(12, 18, 6, 50).fillRect(112, 18, 6, 50);
+    g.fillStyle(0x2b1a0a).fillRect(0, 4, 130, 22).fillStyle(0xa86b38).fillRect(3, 6, 124, 14).generateTexture('gen_table', 130, 72).clear();
+    g.fillStyle(0x2b1a0a).fillRect(0, 0, 100, 86).fillStyle(0x6b3e1c).fillRect(4, 4, 92, 34).fillStyle(0x3b220e).fillRect(10, 26, 80, 14);
+    g.fillStyle(0x8a5228).fillRect(4, 40, 92, 42).fillStyle(0xffc93b).fillRect(4, 48, 92, 6).fillRect(44, 54, 12, 14).generateTexture('gen_chest_open', 100, 86).clear();
+    g.fillStyle(0x2b1a0a).fillRect(0, 0, 64, 18).fillRect(8, 16, 48, 116).fillRect(0, 128, 64, 16);
+    g.fillStyle(0xf3ead6).fillRect(3, 3, 58, 12).fillRect(11, 16, 42, 112).fillRect(3, 131, 58, 10).generateTexture('gen_column', 64, 144).clear();
+    g.fillStyle(0x2b1a0a).fillRect(42, 70, 22, 60).fillStyle(0x7a4a24).fillRect(45, 70, 16, 58);
+    g.fillStyle(0x2b1a0a).fillCircle(53, 46, 46).fillStyle(0x3fa055).fillCircle(53, 46, 42).fillStyle(0x5cc46f).fillCircle(40, 34, 18);
+    g.fillStyle(0x2b1a0a).fillRect(26, 120, 54, 22).fillStyle(0xc0603a).fillRect(29, 122, 48, 18).generateTexture('gen_tree', 106, 144).clear();
+    g.fillStyle(0x2b1a0a).fillRect(10, 20, 10, 36).fillStyle(0x7a4a24).fillRect(12, 20, 6, 34).fillStyle(0xff8a1f).fillCircle(15, 14, 10).fillStyle(0xffe066).fillCircle(15, 16, 5).generateTexture('gen_torch', 30, 56).clear();
+    for (let r = 40; r > 0; r -= 4) g.fillStyle(0xffd43b, 0.07).fillCircle(40, 40, r);
+    g.generateTexture('glow', 80, 80).clear();
+    for (let r = 40; r > 0; r -= 4) g.fillStyle(0xff3b1f, 0.06).fillCircle(40, 40, r);
+    g.generateTexture('redglow', 80, 80).clear();
+    g.fillStyle(0x2b1a0a).fillTriangle(0, 30, 40, 0, 40, 60).fillStyle(0xffd43b).fillTriangle(6, 30, 37, 7, 37, 53).generateTexture('arrow', 40, 60).clear();
+    for (let r = 10; r > 0; r -= 2) g.fillStyle(0xffffff, 0.15).fillCircle(10, 10, r);
+    g.generateTexture('soft', 20, 20).clear();
+    g.destroy();
+    // darkness with a soft hole for the hero's light
+    const fog = this.textures.createCanvas('fog', 3000, 2000), ctx = fog.getContext();
+    const grd = ctx.createRadialGradient(1500, 1000, 150, 1500, 1000, 290);
+    grd.addColorStop(0, 'rgba(8,12,24,0)'); grd.addColorStop(1, 'rgba(8,12,24,0.94)');
+    ctx.fillStyle = grd; ctx.fillRect(0, 0, 3000, 2000); fog.refresh();
+  }
+
+  makeTileset() {
+    // use the Nano Banana floor/wall tiles when both exist
+    if (this.has('tiles')) return;
+    if (this.has('art_floor') && this.has('art_wall')) {
+      // floor tile left transparent: the floor art is laid underneath as one big repeating texture (see create)
+      const c = this.textures.createCanvas('tiles', 128, 64), ctx = c.getContext(), wall = this.textures.get('art_wall').getSourceImage();
+      ctx.drawImage(wall, 0, 0, wall.width / 2, wall.height / 2, 64, 0, 64, 64);
+      c.refresh();
+    } else {
+      const c = this.textures.createCanvas('tiles', 128, 64);
+      c.getContext().drawImage(this.textures.get('gen_tiles').getSourceImage(), 0, 0); c.refresh();
+    }
+  }
+
+  makeAnims() {
+    for (const [sheet, prefix] of [['hero_walk', 'hero'], ['mino_walk', 'mino']]) {
+      if (!this.has(sheet) || this.anims.exists(prefix + '_down')) continue;
+      WALK_ROWS.forEach((d, r) => this.anims.create({ key: `${prefix}_${d}`, frames: this.anims.generateFrameNumbers(sheet, { start: r * 4, end: r * 4 + 3 }), frameRate: 8, repeat: -1 }));
+    }
+  }
+
+  // walls get height: they throw a soft shadow on the floor below and beside them, and have a dark foot
+  wallShadows(grid) {
+    if (!this.textures.exists('wshadeT')) {
+      const mk = (key, w, h, x0, y0, x1, y1, a) => { const c = this.textures.createCanvas(key, w, h), x = c.getContext(), g = x.createLinearGradient(x0, y0, x1, y1);
+        g.addColorStop(0, `rgba(8,6,14,${a})`); g.addColorStop(1, 'rgba(8,6,14,0)'); x.fillStyle = g; x.fillRect(0, 0, w, h); c.refresh(); };
+      mk('wshadeT', 8, 30, 0, 0, 0, 30, 0.62); mk('wshadeL', 22, 8, 0, 0, 22, 0, 0.42); mk('wshadeR', 14, 8, 14, 0, 0, 0, 0.25);
+    }
+    const wall = (c, r) => grid[r] && grid[r][c] === 1;
+    grid.forEach((row, r) => row.forEach((v, c) => {
+      const X = c * T, Y = r * T;
+      if (v === 1) { if (grid[r + 1] && !wall(c, r + 1)) this.add.rectangle(X + T / 2, Y + T - 3, T, 6, 0x08060e, 0.55).setDepth(1); return; }
+      if (wall(c, r - 1)) this.add.image(X, Y, 'wshadeT').setOrigin(0, 0).setDisplaySize(T, 30).setDepth(1);
+      if (wall(c - 1, r)) this.add.image(X, Y, 'wshadeL').setOrigin(0, 0).setDisplaySize(22, T).setDepth(1);
+      if (wall(c + 1, r)) this.add.image(X + T, Y, 'wshadeR').setOrigin(1, 0).setDisplaySize(14, T).setDepth(1);
+    }));
+  }
+
+  create() {
+    this.makeTextures(); this.makeTileset(); this.makeAnims();
+    const def = this.def = FLOORS[this.floorIndex];
+    const F = this.F = buildFloor(def);
+
+    const map = this.make.tilemap({ data: F.grid, tileWidth: T, tileHeight: T });
+    if (this.has('art_floor') && this.has('art_wall')) {
+      const fl = this.add.tileSprite(0, 0, COLS * T, F.rows * T, 'art_floor').setOrigin(0, 0).setDepth(0);
+      fl.setTileScale(256 / this.textures.get('art_floor').getSourceImage().width);
+    }
+    this.layer = map.createLayer(0, map.addTilesetImage('tiles'), 0, 0).setDepth(0);
+    this.layer.setCollision(1);
+    this.wallShadows(F.grid);
+    this.physics.world.setBounds(0, 0, COLS * T, F.rows * T);
+    this.cameras.main.setBounds(0, 0, COLS * T, F.rows * T).setBackgroundColor('#0d1b2a');
+
+    this.thread = this.add.graphics().setDepth(3);
+    this.crumbs = [];
+    this.doors = this.physics.add.staticGroup();
+    this.pickups = []; this.keyEnts = [];
+    F.ents.forEach(e => this.placeEntity(e));
+
+    // hero: invisible physics box at the feet + the picture (animated sheet when it exists)
+    const sx = F.start.x * T + 32, sy = F.start.y * T + 32;
+    this.player = this.physics.add.image(sx, sy, 'px').setVisible(false);
+    this.player.body.setSize(34, 28).setCollideWorldBounds(true);
+    this.physics.add.collider(this.player, this.layer);
+    this.physics.add.collider(this.player, this.doors, (p, d) => this.touchDoor(d));
+    this.heroAnimated = this.has('hero_walk');
+    this.heroImg = (this.heroAnimated ? this.add.sprite(sx, sy, 'hero_walk', 0) : this.add.image(sx, sy, 'hero')).setOrigin(0.5, 0.92).setDepth(10);
+    this.heroScale = (this.heroAnimated ? 104 / FRAME : 92 / this.heroImg.height); this.heroImg.setScale(this.heroScale);
+    this.gear = Gear.attach(this, this.heroImg);
+    this.heroShade = this.add.ellipse(sx, sy + 8, 46, 16, 0x000000, 0.38).setDepth(9);
+    this.heroDir = 'down';
+    this.crumbs.push({ x: sx, y: sy });
+    this.cameras.main.setZoom(HD).startFollow(this.player, true, 0.12, 0.12);
+    // screen-fixed things (HUD, bubbles, menus) get their own camera so they stay in place at HD zoom
+    this.uiCam = this.cameras.add(0, 0, Math.round(W * HD), Math.round(H * HD)).setOrigin(0, 0).setZoom(HD);
+
+    this.fog = this.add.image(sx, sy, 'fog').setDepth(40).setScale(1.6);
+
+    this.keys = this.input.keyboard.addKeys({ left: 'LEFT', right: 'RIGHT', up: 'UP', down: 'DOWN', a: 'A', d: 'D', w: 'W', s: 'S', r: 'R', enter: 'ENTER' });
+    this.input.keyboard.on('keydown-ESC', goToCamp);
+    this.sparks = this.add.particles(0, 0, 'soft', { speed: { min: 60, max: 200 }, lifespan: 600, scale: { start: 1.4, end: 0 }, tint: [0xffd43b, 0xfff3a0, 0xffffff], blendMode: 'ADD', emitting: false }).setDepth(30);
+    this.dust = this.add.particles(0, 0, 'soft', { speed: { min: 40, max: 160 }, lifespan: 700, scale: { start: 2, end: 0 }, tint: [0x8a7560, 0x5a4838], emitting: false }).setDepth(30);
+
+    this.buildHud();
+    this.active = -1; this.holding = null; this.state = 'play';
+    if (def.minotaur) this.setupMinotaur();
+
+    if (this.showTitle) {
+      this.state = 'title';
+      this.overlay('The Labyrinth', "Listen to Ariadne. The Labyrinth is dark —\nthe wrong way sends you back!\n\n←  ↑  →  ↓   walk          R   hear it again", 'Play', () => this.beginFloor());
+    } else this.beginFloor();
+    window.maze = this; // for testing
+  }
+
+  placeEntity(e) {
+    const x = e.x * T + 32, y = e.y * T + 32;
+    if (e.kind === 'door') {
+      const tex = e.style === 'gold' ? this.tex('door_gold') : this.tex('door_wood');
+      const d = this.doors.create(x, y, tex).setDepth(5);
+      this.fit(d, 64, 64); d.refreshBody();
+      d.ent = e; e.sprite = d; e.deco = [];
+      if (e.style === 'pic' || e.style === 'color') {
+        const plate = this.add.circle(x, y - 6, 24, e.style === 'color' ? e.color[1] : 0xfff8e6).setStrokeStyle(4, 0x2b1a0a).setDepth(6);
+        e.deco.push(plate);
+        if (e.style === 'pic') {
+          const ik = iconKey(e.noun[0]);
+          const pic = this.has(ik) ? this.fit(this.add.image(x, y - 6, ik), 40, 40) : this.add.text(x, y - 6, e.noun[1], { fontSize: 28 }).setOrigin(0.5);
+          e.deco.push(pic.setDepth(7));
+        }
+      }
+      if (e.style === 'gold' && !this.has('art_door_gold')) e.deco.push(this.add.text(x, y - 4, '🔒', { fontSize: 22 }).setOrigin(0.5).setDepth(6));
+    }
+    if (e.kind === 'coin' || e.kind === 'gem') {
+      const s = this.fit(this.add.image(x, y, this.tex(e.kind)), 34, 34).setDepth(4);
+      this.tweens.add({ targets: s, y: y - 6, duration: 700 + Math.random() * 300, yoyo: true, repeat: -1, ease: 'Sine.inOut' });
+      this.pickups.push({ e, s });
+    }
+    if (e.kind === 'key') {
+      this.add.image(x, y, 'glow').setDepth(3).setScale(1.1).setAlpha(0.8);
+      const s = this.fit(this.keyImage(x, y, e.color), 64, 64).setDepth(4);
+      this.tweens.add({ targets: s, angle: { from: -8, to: 8 }, duration: 600, yoyo: true, repeat: -1, ease: 'Sine.inOut' });
+      e.sprite = s; e.px = x; e.py = y; this.keyEnts.push(e);
+    }
+    if (e.kind === 'obj') {
+      const art = this.has('art_' + (e.obj === 'chest' ? 'chest_open' : e.obj));
+      if (e.obj === 'table') this.fit(this.add.image(x, y, this.tex('table')), art ? 150 : 140, art ? 150 : 90).setDepth(6);
+      if (e.obj === 'chest') {
+        // drawn twice: the whole chest behind, its lower half in front, so a key can sit "in" it
+        const sz = art ? [120, 120] : [100, 86];
+        this.fit(this.add.image(x, y, this.tex('chest_open')), ...sz).setDepth(4);
+        const front = this.fit(this.add.image(x, y, this.tex('chest_open')), ...sz).setDepth(6);
+        front.setCrop(0, front.height * 0.5, front.width, front.height * 0.5);
+      }
+      if (e.obj === 'column') this.fit(this.add.image(x, y - 40, this.tex('column')), art ? 150 : 70, 150).setDepth(6);
+      if (e.obj === 'tree') this.fit(this.add.image(x, y - 40, this.tex('tree')), art ? 150 : 110, 150).setDepth(6);
+    }
+    if (e.kind === 'pkey') {
+      const P = {
+        'table:on': [0, -48, 7], 'table:under': [0, 30, 5],
+        'chest:in': [0, -6, 5], 'chest:next to': [92, 30, 5],
+        'column:behind': [30, -62, 5], 'column:next to': [90, 30, 5],
+        'tree:behind': [-60, -58, 5], 'tree:next to': [92, 30, 5],
+      }[e.obj + ':' + e.rel];
+      e.px = x + P[0]; e.py = y + P[1];
+      e.sprite = this.fit(this.add.image(e.px, e.py, this.tex('key_gold')), 54, 54).setDepth(P[2]);
+      this.keyEnts.push(e);
+    }
+    if (e.kind === 'decor') { if (this.has('art_' + e.art)) this.fit(this.add.image(x, y, 'art_' + e.art), 54, 64).setDepth(4); }
+    if (e.kind === 'torch') {
+      const t = this.fit(this.add.image(x, y + 4, this.tex('torch')), 30, 56).setDepth(5);
+      const gl = this.add.image(x, y - 10, 'glow').setDepth(4).setBlendMode('ADD').setScale(1.2);
+      this.tweens.add({ targets: [gl], scale: 1.45, alpha: { from: 1, to: 0.7 }, duration: 160 + Math.random() * 120, yoyo: true, repeat: -1 });
+    }
+    if (e.kind === 'stairs') {
+      e.sprite = this.fit(this.add.image(x, y, this.tex('stairs')), 64, 64).setDepth(2);
+      this.stairs = e;
+      this.add.text(x, y - 50, 'EXIT', { fontFamily: 'Cinzel', fontSize: 22, fontStyle: '900', color: '#ffd43b', stroke: '#2b1a0a', strokeThickness: 5 }).setOrigin(0.5).setDepth(6);
+    }
+  }
+
+  // =====================================================================
+  //  HUD
+  // =====================================================================
+  buildHud() {
+    const d = 60, fix = o => o.setScrollFactor(0).setDepth(d);
+    fix(this.add.graphics()).fillStyle(0x2b1a0a).fillRoundedRect(18, 21, 130, 46, 23).fillStyle(0xfff8e6).fillRoundedRect(18, 16, 130, 46, 23).lineStyle(4, 0x2b1a0a).strokeRoundedRect(18, 16, 130, 46, 23);
+    fix(this.fit(this.add.image(44, 39, this.tex('coin')), 30, 30));
+    this.coinText = fix(this.add.text(68, 22, String(this.coins), { fontFamily: 'Nunito', fontSize: 27, fontStyle: '900', color: '#2b1a0a' }));
+    fix(this.add.text(W - 20, 18, this.def.name, { fontFamily: 'Cinzel', fontSize: 26, fontStyle: '900', color: '#fff8e6', stroke: '#2b1a0a', strokeThickness: 6 }).setOrigin(1, 0));
+    this.holdIcon = fix(this.add.image(W - 50, 84, this.tex('key_gold')).setVisible(false));
+    fix(this.add.text(W - 20, H - 16, '⌂ Camp', { fontFamily: 'Nunito', fontSize: 22, fontStyle: '900', color: '#fff8e6', stroke: '#2b1a0a', strokeThickness: 6 }).setOrigin(1, 1))
+      .setInteractive({ useHandCursor: true }).on('pointerdown', goToCamp);
+    // Ariadne's speech bubble
+    this.bubble = this.add.container(W / 2, H - 70).setScrollFactor(0).setDepth(d).setVisible(false);
+    this.bubbleBg = this.add.graphics();
+    const parts = [this.add.circle(0, 0, 36, 0xf2c29b)];
+    if (this.has('art_ariadne')) {
+      if (!this.has('ariadne_round')) {
+        // cut a circle out of the portrait, zoomed on her face
+        const src = this.textures.get('art_ariadne').getSourceImage(), N = 256;
+        const c = this.textures.createCanvas('ariadne_round', N, N), ctx = c.getContext();
+        ctx.beginPath(); ctx.arc(N / 2, N / 2, N / 2, 0, Math.PI * 2); ctx.clip();
+        ctx.fillStyle = '#f6d9b8'; ctx.fillRect(0, 0, N, N);
+        const z = 1.35, w = src.width * z, hgt = src.height * z;
+        ctx.drawImage(src, (N - w) / 2, -N * 0.04, w, hgt);
+        c.refresh();
+      }
+      parts.push(this.fit(this.add.image(0, 0, 'ariadne_round'), 68, 68));
+    }
+    else parts.push(this.add.text(0, 2, 'A', { fontFamily: 'Cinzel', fontSize: 36, fontStyle: '900', color: '#7a3b00' }).setOrigin(0.5));
+    parts.push(this.add.circle(0, 0, 36).setStrokeStyle(5, 0x2b1a0a));
+    this.face = this.add.container(0, -6, parts);
+    this.bubbleText = this.add.text(0, -4, '', { fontFamily: 'Nunito', fontSize: 34, fontStyle: '900', color: '#2b1a0a' }).setOrigin(0, 0.5);
+    this.bubbleHe = this.add.text(0, -66, '', { fontFamily: 'Nunito', fontSize: 26, fontStyle: '900', color: '#ffe066', stroke: '#2b1a0a', strokeThickness: 6 }).setOrigin(0.5).setVisible(false);
+    this.bubble.add([this.bubbleBg, this.face, this.bubbleText, this.bubbleHe]);
+    this.bubble.setSize(600, 80).setInteractive({ useHandCursor: true }).on('pointerdown', () => this.repeat());
+    // how far the Minotaur is behind her (along the thread), top center
+    this.minoMeter = this.add.container(W / 2, 40).setScrollFactor(0).setDepth(d + 1).setVisible(false);
+    this.minoMeterBg = this.add.graphics();
+    const mFace = this.has('mino_walk') ? this.fit(this.add.image(-96, 0, 'mino_walk', 0), 44, 44) : this.add.text(-96, 0, '🐂', { fontSize: 30 }).setOrigin(0.5);
+    this.minoMeterText = this.add.text(-66, 0, '', { fontFamily: 'Nunito', fontSize: 28, fontStyle: '900', color: '#ffffff' }).setOrigin(0, 0.5);
+    this.minoMeter.add([this.minoMeterBg, mFace, this.minoMeterText]);
+  }
+
+  speak(text, he, showHe) {
+    this.bubbleText.setText(text); this.bubbleHe.setText(he || '').setVisible(!!showHe);
+    const w = this.bubbleText.width + 140, x0 = -w / 2;
+    this.face.x = x0 + 46; this.bubbleText.x = x0 + 98;
+    this.bubbleBg.clear().fillStyle(0x2b1a0a).fillRoundedRect(x0, -32, w, 64, 32).fillStyle(0xffffff).fillRoundedRect(x0, -38, w, 64, 32).lineStyle(5, 0x2b1a0a).strokeRoundedRect(x0, -38, w, 64, 32);
+    this.bubble.setVisible(true).setScale(0.6); this.tweens.add({ targets: this.bubble, scale: 1, duration: 260, ease: 'Back.out' });
+    say(text);
+  }
+  repeat() { if (this.bubble.visible) say(this.bubbleText.text); }
+
+  floatText(txt, x, y, color = '#ffe066', size = 30) {
+    const t = this.add.text(x, y, txt, { fontFamily: 'Nunito', fontSize: size, fontStyle: '900', color, stroke: '#2b1a0a', strokeThickness: 6 }).setOrigin(0.5).setDepth(50);
+    this.tweens.add({ targets: t, y: y - 70, alpha: { from: 1, to: 0 }, duration: 1300, ease: 'Quad.out', onComplete: () => t.destroy() });
+  }
+  addCoins(n, x, y) {
+    for (let k = 0; k < n; k++) this.time.delayedCall(k * 70, () => { this.coins++; this.coinText.setText(String(this.coins)); Save.addCoins(1); sfx.coin(); });
+    if (x !== undefined) this.sparks.explode(10 + n * 2, x, y);
+  }
+
+  overlay(title, text, btn, onClick) {
+    const o = this.add.container(0, 0).setDepth(200);
+    o.add(this.add.rectangle(W / 2, H / 2, W, H, 0x050f1e, 0.8).setInteractive());
+    o.add(this.add.text(W / 2, 190, title, { fontFamily: 'Cinzel', fontSize: 80, fontStyle: '900', color: '#ffd43b', stroke: '#6b4400', strokeThickness: 10 }).setOrigin(0.5));
+    o.add(this.add.text(W / 2, 340, text, { fontFamily: 'Nunito', fontSize: 28, fontStyle: '700', color: '#ffffff', align: 'center', lineSpacing: 6 }).setOrigin(0.5));
+    const b = this.add.container(W / 2, 520);
+    b.add([this.add.graphics().fillStyle(0x2b1a0a).fillRoundedRect(-160, -32, 320, 76, 38).fillStyle(0xffd43b).fillRoundedRect(-160, -40, 320, 76, 38).lineStyle(5, 0x2b1a0a).strokeRoundedRect(-160, -40, 320, 76, 38),
+           this.add.text(0, -2, btn, { fontFamily: 'Cinzel', fontSize: 36, fontStyle: '900', color: '#2b1a0a' }).setOrigin(0.5)]);
+    const go = () => { if (!o.active) return; o.destroy(); onClick(); };
+    b.setSize(320, 76).setInteractive({ useHandCursor: true }).on('pointerdown', go).on('pointerover', () => b.setScale(1.06)).on('pointerout', () => b.setScale(1));
+    this.keys.enter.once('down', go);
+    o.add(b);
+    // pin everything to the screen (children too), otherwise clicks are tested against the scrolled world
+    [o, b, ...o.list, ...b.list].forEach(c => c.setScrollFactor(0));
+  }
+
+  banner(title, sub) {
+    const t = this.add.text(W / 2, 290, title, { fontFamily: 'Cinzel', fontSize: 84, fontStyle: '900', color: '#ffd43b', stroke: '#6b4400', strokeThickness: 10 }).setOrigin(0.5).setDepth(120).setScrollFactor(0);
+    const s = this.add.text(W / 2, 380, sub, { fontFamily: 'Nunito', fontSize: 36, fontStyle: '900', color: '#fff', stroke: '#2b1a0a', strokeThickness: 7 }).setOrigin(0.5).setDepth(120).setScrollFactor(0);
+    this.tweens.add({ targets: [t, s], scale: { from: 0.4, to: 1 }, duration: 400, ease: 'Back.out' });
+    this.tweens.add({ targets: [t, s], alpha: 0, delay: 1600, duration: 400, onComplete: () => { t.destroy(); s.destroy(); } });
+  }
+
+  setFog(scale) { this.tweens.add({ targets: this.fog, scale, duration: 700, ease: 'Sine.inOut' }); }
+
+  // =====================================================================
+  //  INSTRUCTIONS
+  // =====================================================================
+  stepsFor(ch) {
+    const E = this.F.ents.filter(e => e.ch === ch.i);
+    if (ch.type === 'doors') { const n = E.find(e => e.kind === 'door' && e.correct).noun; return [{ text: `Go through the ${n[0]} door!`, he: `היכנסי בדלת של ה${n[2]}` }]; }
+    if (ch.type === 'keys') { const c = ch.target; return [{ text: `Take the ${c[0]} key!`, he: `קחי את המפתח ${c[2]}` }, { text: `Open the ${c[0]} door!`, he: `פתחי את הדלת ${c[3]}` }]; }
+    if (ch.type === 'prep') { const k = E.find(e => e.kind === 'pkey' && e.correct); return [{ text: `The key is ${k.rel} the ${k.obj}. Take it!`, he: `המפתח ${REL_HE[k.rel]}${OBJECTS[k.obj].he}` }, { text: 'Now open the door!', he: 'עכשיו פתחי את הדלת' }]; }
+    return [{ text: DIRS[ch.dir].text, he: DIRS[ch.dir].he }];
+  }
+
+  // =====================================================================
+  //  FLOW
+  // =====================================================================
+  beginFloor() {
+    this.state = 'play';
+    this.banner(this.def.name, this.def.sub);
+    this.time.delayedCall(1200, () => this.active < 0 && this.speak(this.floorIndex === 0 ? 'Hello, hero! Walk up and listen to me.' : 'Walk up, hero!', 'לכי למעלה'));
+  }
+
+  chamberAt(y) { return this.F.chambers.findIndex(c => y > c.top * T + T && y < c.bottom * T + 10); }
+
+  activate(i) {
+    const prev = this.F.chambers[this.active];
+    if (prev && prev.type === 'fork' && !prev.done) this.chamberDone(prev, this.player.x, this.player.y);
+    this.active = i;
+    const ch = this.F.chambers[i]; ch.step = 0;
+    this.setFog(ch.type === 'fork' ? FOG_DARK : FOG_ROOM);
+    this.giveStep(ch);
+  }
+
+  giveStep(ch) {
+    ch.steps = this.stepsFor(ch);
+    const st = ch.steps[ch.step];
+    const help = ch.mistakes >= 2;          // after two mistakes: Hebrew + show the way
+    this.speak(st.text, st.he, help);
+    if (help) this.showWay(ch);
+    if (this.repeatTimer) this.repeatTimer.remove();
+    // only the voice repeats by itself; no free hints for waiting
+    this.repeatTimer = this.time.addEvent({ delay: 9000, loop: true, callback: () => { if (!ch.done && this.active === ch.i && this.state === 'play') say(ch.steps[ch.step].text); } });
+  }
+
+  showWay(ch) {
+    const glowAt = (x, y) => { const g = this.add.image(x, y, 'glow').setDepth(45).setScale(1.6).setBlendMode('ADD'); this.tweens.add({ targets: g, scale: 2.2, alpha: { from: 1, to: 0.3 }, duration: 500, yoyo: true, repeat: 7, onComplete: () => g.destroy() }); };
+    const E = this.F.ents.filter(e => e.ch === ch.i);
+    if (ch.type === 'doors') { const d = E.find(e => e.kind === 'door' && e.correct); glowAt(d.sprite.x, d.sprite.y); }
+    if (ch.type === 'keys') {
+      if (ch.step === 0) { const k = E.find(e => e.kind === 'key' && e.color === ch.target); if (k.sprite.active) glowAt(k.px, k.py); }
+      else { const d = E.find(e => e.kind === 'door' && e.color === ch.target); glowAt(d.sprite.x, d.sprite.y); }
+    }
+    if (ch.type === 'prep') {
+      if (ch.step === 0) { const k = E.find(e => e.kind === 'pkey' && e.correct); if (k.sprite.active) glowAt(k.px, k.py); }
+      else { const d = E.find(e => e.kind === 'door'); glowAt(d.sprite.x, d.sprite.y); }
+    }
+    if (ch.type === 'fork') {
+      const j = ch.junction, a = this.add.image(j.x * T + 32, j.y * T + 32, 'arrow').setDepth(45).setAngle({ left: 0, up: 90, right: 180 }[ch.dir]);
+      this.tweens.add({ targets: a, alpha: { from: 1, to: 0.4 }, duration: 400, yoyo: true, repeat: 7, onComplete: () => a.destroy() });
+    }
+  }
+
+  chamberDone(ch, x, y) {
+    ch.done = true;
+    if (this.repeatTimer) this.repeatTimer.remove();
+    const perfect = ch.mistakes === 0;
+    (perfect ? sfx.perfect : sfx.good)();
+    this.floatText(perfect ? 'Perfect!' : 'Good!', x, y - 60, '#ffe066', 36);
+    this.addCoins(perfect ? 5 : 2, x, y);
+    this.bubble.setVisible(false);
+  }
+
+  // a wrong choice: back to the chamber's entrance, and Ariadne repeats the SAME instruction
+  mistake(ch, msg, x = this.player.x, y = this.player.y) {
+    if (this.state !== 'play') return;
+    this.state = 'busy'; ch.mistakes++;
+    sfx.wrong(); this.cameras.main.shake(160, 0.006);
+    this.floatText(msg, x, y - 50, '#ff9b9b', 30);
+    this.player.setVelocity(0, 0);
+    this.tweens.add({ targets: this.heroImg, alpha: 0, scale: this.heroScale * 0.4, angle: 200, duration: 450, ease: 'Quad.in' });
+    this.time.delayedCall(550, () => {
+      const ex = ch.entryX * T + 32, ey = (ch.bottom - 1) * T + 32;
+      this.player.setPosition(ex, ey);
+      this.crumbs.push({ x: ex, y: ey, jump: true });
+      this.heroImg.setPosition(ex, ey).setAngle(0);
+      this.tweens.add({ targets: this.heroImg, alpha: 1, scale: this.heroScale, duration: 300, ease: 'Back.out' });
+      this.state = 'play';
+      this.giveStep(ch);
+    });
+  }
+
+  openDoor(d) {
+    sfx.door();
+    d.disableBody(true, false);
+    (d.ent.deco || []).forEach(o => this.tweens.add({ targets: o, alpha: 0, duration: 300 }));
+    this.tweens.add({ targets: d, scaleY: d.scaleY * 0.1, y: d.y - 28, alpha: 0.2, duration: 350, ease: 'Quad.in' });
+    this.sparks.explode(16, d.x, d.y);
+  }
+
+  touchDoor(d) {
+    if (this.state !== 'play' || this.time.now < (this.doorCool || 0)) return;
+    this.doorCool = this.time.now + 700;
+    const e = d.ent, ch = this.F.chambers[e.ch];
+    if (ch.done || this.active !== ch.i) return;
+    const bump = msg => { this.tweens.add({ targets: d, x: d.x + 4, duration: 50, yoyo: true, repeat: 3 }); this.floatText(msg, d.x, d.y - 40, '#ffffff', 26); sfx.wrong(); };
+    const finish = () => { this.openDoor(d); this.holding = null; this.holdIcon.setVisible(false); this.chamberDone(ch, d.x, d.y); };
+    if (e.style === 'pic') { if (e.correct) finish(); else this.mistake(ch, 'Wrong door! Listen again.', d.x, d.y); }
+    if (e.style === 'color') {
+      if (ch.step === 0) bump('Find the key first!');
+      else if (e.color === ch.target) finish();
+      else this.mistake(ch, 'Wrong door! Listen again.', d.x, d.y);
+    }
+    if (e.style === 'gold') { if (ch.step === 1) finish(); else bump('Locked! Find the key.'); }
+  }
+
+  touchKey(k) {
+    const ch = this.F.chambers[k.ch];
+    if (ch.done || this.active !== ch.i || ch.step !== 0 || this.state !== 'play') return;
+    const right = k.kind === 'key' ? k.color === ch.target : k.correct;
+    if (!right) { this.mistake(ch, 'Not this key! Listen again.', k.px, k.py); return; }
+    sfx.key(); this.sparks.explode(12, k.px, k.py);
+    this.tweens.add({ targets: k.sprite, y: k.py - 40, alpha: 0, duration: 300, onComplete: () => k.sprite.destroy() });
+    this.holding = k.kind === 'key' ? k.color[0] : 'gold';
+    if (k.kind === 'key' && this.has('art_key_white')) { this.holdIcon.setTexture('art_key_white'); if (k.color[0] !== 'white') this.holdIcon.setTint(k.color[1]); else this.holdIcon.clearTint(); }
+    else { this.holdIcon.clearTint().setTexture(k.kind === 'key' ? 'gen_key_' + k.color[0] : this.tex('key_gold')); }
+    this.fit(this.holdIcon, 56, 40).setVisible(true);
+    this.floatText('Got it!', k.px, k.py - 40);
+    ch.step = 1; this.giveStep(ch);
+  }
+
+  forkTrap(ch) {
+    sfx.crumble();
+    this.dust.explode(30, this.player.x, this.player.y);
+    this.mistake(ch, 'Dead end! Listen again.');
+  }
+
+  // confetti, fireworks and a happy hero
+  celebrate(big) {
+    const cam = this.cameras.main;
+    if (!this.has('confetti')) { const g = this.make.graphics({ add: false }); g.fillStyle(0xffffff).fillRect(0, 0, 10, 16).generateTexture('confetti', 10, 16).destroy(); }
+    const conf = this.add.particles(0, 0, 'confetti', {
+      x: { min: 0, max: W }, y: -20, lifespan: 3200, speedY: { min: 180, max: 320 }, speedX: { min: -80, max: 80 },
+      rotate: { start: 0, end: 720 }, scale: { min: 0.6, max: 1.1 }, quantity: big ? 6 : 4, frequency: 40,
+      tint: [0xe84545, 0x3b82f6, 0x3fbf6f, 0xffd43b, 0xff7eb6, 0x9b5de5, 0xff8a1f],
+    }).setScrollFactor(0).setDepth(150);
+    this.time.delayedCall(big ? 2600 : 1600, () => conf.stop());
+    this.time.delayedCall(5000, () => conf.destroy());
+    const boom = this.add.particles(0, 0, 'soft', { speed: { min: 150, max: 380 }, lifespan: 900, gravityY: 250, scale: { start: 1.6, end: 0 }, blendMode: 'ADD', emitting: false }).setScrollFactor(0).setDepth(151);
+    const n = big ? 8 : 4;
+    for (let k = 0; k < n; k++) this.time.delayedCall(200 + k * 320, () => {
+      boom.setParticleTint(Phaser.Utils.Array.GetRandom([0xffd43b, 0xff7eb6, 0x4fd1ff, 0x7be07b, 0xff8a1f]));
+      boom.explode(40, Phaser.Math.Between(200, W - 200), Phaser.Math.Between(120, 360));
+      tone(300 + k * 60, 1200, .25, 'triangle', .05);
+    });
+    this.time.delayedCall(6000, () => boom.destroy());
+  }
+
+  // walk onto the stairs, then step down into the dark opening: a little lower, smaller and darker with each step
+  descendStairs() {
+    const st = this.stairs.sprite, h = this.heroImg, s = this.heroScale;
+    this.player.setVelocity(0, 0);
+    if (this.heroAnimated) h.play('hero_up');
+    this.tweens.add({ targets: h, x: st.x, y: st.y + 6, duration: 350, ease: 'Sine.inOut', onComplete: () => {
+      const steps = 4;
+      const chain = [];
+      for (let k = 1; k <= steps; k++) {
+        const f = k / steps;
+        chain.push({ y: st.y + 6 + k * 7, scale: s * (1 - f * 0.45), duration: 260, ease: 'Quad.in',
+                     onStart: () => { tone(220 - k * 25, 150 - k * 20, 0.08, 'triangle', 0.05); h.setTint(Phaser.Display.Color.GetColor(255 - k * 45, 255 - k * 45, 255 - k * 40)); } });
+      }
+      chain.push({ alpha: 0, duration: 250, onComplete: () => { if (this.heroAnimated) h.anims.stop(); } });
+      this.tweens.chain({ targets: h, tweens: chain });
+    } });
+  }
+
+  floorComplete() {
+    this.state = 'done'; this.bubble.setVisible(false); sfx.win();
+    if (this.minoMeter) this.minoMeter.setVisible(false);
+    if (this.mino) this.minoState = 'done';
+    Save.markDone('labyrinth', this.floorIndex + 1);
+    this.celebrate(this.floorIndex + 1 >= FLOORS.length);
+    this.descendStairs();
+    this.addCoins(10, this.player.x, this.player.y);
+    const next = this.floorIndex + 1;
+    if (next < FLOORS.length) {
+      this.banner('Floor complete!', 'Down the stairs…');
+      say('Well done! Down the stairs!');
+      this.time.delayedCall(3200, () => this.cameras.main.fadeOut(400));
+      this.time.delayedCall(3700, () => this.scene.restart({ floor: next, coins: this.coins, title: false }));
+    } else {
+      say('You escaped the Labyrinth! You are a true hero!');
+      this.time.delayedCall(3200, () => this.overlay('You escaped!', `You found the way out of the Labyrinth!\n\nDrachmas: ${this.coins}`, 'Back to camp', goToCamp));
+    }
+  }
+
+  // =====================================================================
+  //  MINOTAUR (floor 5): sleeps and snores, wakes up, follows the golden thread slowly.
+  //  It is drawn above the darkness, glows red, makes noise as it comes closer,
+  //  and an arrow at the screen edge shows where it is when it's off screen.
+  // =====================================================================
+  setupMinotaur() {
+    const s = this.F.start, x = s.x * T + 32 + 120, y = s.y * T + 20;
+    this.minoGlow = this.add.image(x, y, 'redglow').setDepth(44).setBlendMode('ADD').setScale(2.2);
+    this.minoAnimated = this.has('mino_walk');
+    if (this.has('art_minotaur_sleep')) this.mino = this.fit(this.add.image(x, y, 'art_minotaur_sleep'), 150, 120);
+    else if (this.minoAnimated) this.mino = this.add.sprite(x, y, 'mino_walk', 0).setScale(140 / FRAME);
+    else {
+      this.mino = this.add.container(x, y);
+      this.mino.add([this.add.circle(0, 0, 40, 0x6b3e1c).setStrokeStyle(5, 0x2b1a0a), this.add.text(0, 2, '🐂', { fontSize: 54 }).setOrigin(0.5)]);
+    }
+    this.mino.setDepth(45);
+    this.zzz = this.add.text(x + 40, y - 70, 'Zzz', { fontFamily: 'Nunito', fontSize: 30, fontStyle: '900', color: '#ffffff', stroke: '#2b1a0a', strokeThickness: 5 }).setDepth(46);
+    this.tweens.add({ targets: this.zzz, y: this.zzz.y - 24, alpha: { from: 1, to: 0.2 }, duration: 1300, repeat: -1 });
+    this.minoState = 'sleep'; this.minoIdx = 0; this.nextSnore = 0; this.nextStomp = 0; this.nextRoar = 0;
+  }
+
+  minoVolume() { return Phaser.Math.Clamp(1 - Phaser.Math.Distance.Between(this.mino.x, this.mino.y, this.player.x, this.player.y) / 1100, 0.15, 1); }
+
+  wakeMinotaur() {
+    this.minoState = 'wake'; this.zzz.destroy(); sfx.roar(1); this.cameras.main.shake(500, 0.012);
+    if (this.has('art_minotaur_sleep')) {
+      const x = this.mino.x, y = this.mino.y; this.mino.destroy();
+      this.mino = this.minoAnimated ? this.add.sprite(x, y, 'mino_walk', 0).setScale(140 / FRAME) : this.add.container(x, y, [this.add.circle(0, 0, 40, 0x6b3e1c).setStrokeStyle(5, 0x2b1a0a), this.add.text(0, 2, '🐂', { fontSize: 54 }).setOrigin(0.5)]);
+      this.mino.setDepth(45);
+    }
+    this.floatText('ROAR! The Minotaur woke up!', this.mino.x, this.mino.y - 70, '#ff9b9b', 32);
+    this.time.delayedCall(1800, () => { this.minoState = 'chase'; this.minoIdx = 0; });
+  }
+
+  caught() {
+    this.minoState = 'pause';
+    this.cameras.main.flash(300, 255, 120, 80); sfx.roar(1);
+    const ch = this.F.chambers[Math.max(this.active, 0)];
+    const x = ch.entryX * T + 32, y = (ch.bottom - 1) * T + 32;
+    this.player.setPosition(x, y).setVelocity(0, 0);
+    this.floatText('The Minotaur got you! Try again!', x, y - 70, '#ffb38a', 28);
+    let j = this.crumbs.length - 1, best = 1e9;
+    for (let n = this.crumbs.length - 1; n >= 0; n--) { const dd = Phaser.Math.Distance.Between(this.crumbs[n].x, this.crumbs[n].y, x, y); if (dd < best) { best = dd; j = n; } if (dd < 20) break; }
+    this.crumbs = this.crumbs.slice(0, j + 1); this.crumbs.push({ x, y });
+    this.minoIdx = Math.max(0, j - 25);
+    this.mino.setPosition(this.crumbs[this.minoIdx].x, this.crumbs[this.minoIdx].y);
+    this.time.delayedCall(3000, () => { if (this.minoState === 'pause') this.minoState = 'chase'; });
+  }
+
+  updateMinotaur(dt, time) {
+    if (!this.mino) return;
+    this.minoGlow.setPosition(this.mino.x, this.mino.y);
+    const v = this.minoVolume();
+    if (this.minoState === 'sleep' && time > this.nextSnore) { sfx.snore(v); this.nextSnore = time + 2600; }
+    if (this.minoState === 'chase') {
+      // follow the thread, skipping "jumps" (where the hero was sent back) so it never walks through walls
+      while (this.crumbs[this.minoIdx + 1] && this.crumbs[this.minoIdx + 1].jump) { this.minoIdx++; this.mino.setPosition(this.crumbs[this.minoIdx].x, this.crumbs[this.minoIdx].y); }
+      const target = this.crumbs[Math.min(this.minoIdx, this.crumbs.length - 1)];
+      const dx = target.x - this.mino.x, dy = target.y - this.mino.y, dist = Math.hypot(dx, dy);
+      if (dist < 8) this.minoIdx = Math.min(this.minoIdx + 1, this.crumbs.length - 1);
+      else { const s = MINO_SPEED * dt / dist; this.mino.x += dx * s; this.mino.y += dy * s; }
+      if (this.minoAnimated && this.mino.anims) {
+        const d = Math.abs(dx) > Math.abs(dy) ? (dx < 0 ? 'left' : 'right') : (dy < 0 ? 'up' : 'down');
+        if (this.mino.anims.currentAnim?.key !== 'mino_' + d) this.mino.play('mino_' + d);
+      } else this.mino.angle = Math.sin(time / 120) * 6;
+      if (time > this.nextStomp) { sfx.stomp(v); this.nextStomp = time + 480; }
+      if (time > this.nextRoar) { (v > 0.6 ? sfx.roar : sfx.growl)(v); this.nextRoar = time + Phaser.Math.Between(4500, 8000); }
+      if (Phaser.Math.Distance.Between(this.mino.x, this.mino.y, this.player.x, this.player.y) < 50) this.caught();
+    }
+    // distance meter: steps left along the thread between the Minotaur and the hero
+    this.minoMeter.setVisible(this.minoState === 'chase' || this.minoState === 'pause' || this.minoState === 'wake');
+    if (this.minoMeter.visible) {
+      const n = this.crumbs.length - 1 - Math.min(this.minoIdx, this.crumbs.length - 1);
+      const tgt = this.crumbs[Math.min(this.minoIdx, this.crumbs.length - 1)];
+      const meters = Math.max(0, Math.round((n * 18 + Phaser.Math.Distance.Between(this.mino.x, this.mino.y, tgt.x, tgt.y)) / T));
+      const col = meters > 12 ? 0x2f9e44 : meters > 6 ? 0xe8890c : 0xd62828;
+      if (meters !== this.lastMeters || col !== this.lastMeterCol) {
+        this.lastMeters = meters; this.lastMeterCol = col;
+        this.minoMeterText.setText(this.minoState === 'pause' ? 'resting…' : `${meters} m`);
+        this.minoMeterBg.clear().fillStyle(0x2b1a0a).fillRoundedRect(-124, -22, 230, 50, 25).fillStyle(col).fillRoundedRect(-124, -27, 230, 50, 25).lineStyle(4, 0x2b1a0a).strokeRoundedRect(-124, -27, 230, 50, 25);
+      }
+      this.minoMeter.setScale(meters <= 6 && this.minoState === 'chase' ? 1 + Math.abs(Math.sin(time / 150)) * 0.12 : 1);
+    }
+  }
+
+  // =====================================================================
+  //  UPDATE
+  // =====================================================================
+  update(time, deltaMs) {
+    hdTick(this, this.uiCam);
+    const dt = Math.min(deltaMs, 50) / 1000, k = this.keys;
+    let vx = 0, vy = 0;
+    if (this.state === 'play') {
+      if (k.left.isDown || k.a.isDown) vx -= 1;
+      if (k.right.isDown || k.d.isDown) vx += 1;
+      if (k.up.isDown || k.w.isDown) vy -= 1;
+      if (k.down.isDown || k.s.isDown) vy += 1;
+      if (Phaser.Input.Keyboard.JustDown(k.r)) this.repeat();
+    }
+    const len = Math.hypot(vx, vy) || 1;
+    this.player.setVelocity(vx / len * SPEED, vy / len * SPEED);
+
+    // hero picture / walk animation
+    const moving = vx || vy;
+    if (moving) this.heroDir = Math.abs(vx) > Math.abs(vy) ? (vx < 0 ? 'left' : 'right') : (vy < 0 ? 'up' : 'down');
+    const freeze = this.state === 'busy' || this.state === 'done';
+    if (!freeze) this.heroImg.setPosition(this.player.x, this.player.y + 10);
+    this.heroShade.setPosition(this.heroImg.x, this.heroImg.y - 2).setAlpha(0.38 * this.heroImg.alpha);
+    if (freeze) { /* tweens own the picture */ }
+    else if (this.heroAnimated) {
+      if (moving) { if (this.heroImg.anims.currentAnim?.key !== 'hero_' + this.heroDir || !this.heroImg.anims.isPlaying) this.heroImg.play('hero_' + this.heroDir); }
+      else { this.heroImg.anims.stop(); this.heroImg.setFrame(WALK_ROWS.indexOf(this.heroDir) * 4); }
+    } else {
+      if (vx) this.heroImg.setFlipX(vx < 0);
+      this.heroImg.y += moving ? -Math.abs(Math.sin(time / 80)) * 5 : 0;
+      this.heroImg.angle = moving ? Math.sin(time / 80) * 5 : 0;
+    }
+    this.fog.setPosition(this.player.x, this.player.y - 20);
+
+    // golden thread
+    const last = this.crumbs[this.crumbs.length - 1];
+    if (Phaser.Math.Distance.Between(last.x, last.y, this.player.x, this.player.y) > 18) {
+      this.crumbs.push({ x: this.player.x, y: this.player.y });
+      if (this.crumbs.length % 3 === 0) sfx.step();
+    }
+    this.thread.clear();
+    const pts = this.crumbs.slice(-600);
+    let seg = [];
+    const flush = () => { if (seg.length > 1) { this.thread.lineStyle(5, 0x8a5a00, 0.9).strokePoints(seg.map(p => ({ x: p.x, y: p.y + 14 }))).lineStyle(2.5, 0xffd43b, 1).strokePoints(seg.map(p => ({ x: p.x, y: p.y + 13 }))); } seg = []; };
+    for (const p of pts) { if (p.jump) flush(); seg.push(p); }
+    flush();
+
+    this.updateMinotaur(dt, time);
+    if (this.state !== 'play') return;
+
+    const ci = this.chamberAt(this.player.y);
+    if (ci > this.active) {
+      this.activate(ci);
+      if (this.mino && this.minoState === 'sleep') this.wakeMinotaur();
+    }
+    const ch = this.F.chambers[this.active];
+    if (ch && ch.type === 'fork' && !ch.done) {
+      const tx = Math.floor(this.player.x / T), ty = Math.floor(this.player.y / T);
+      if (ch.wrong.some(([x1, y1, x2, y2]) => tx >= x1 && tx <= x2 && ty >= y1 && ty <= y2)) this.forkTrap(ch);
+    }
+    for (const p of this.pickups) {
+      if (p.taken) continue;
+      if (Phaser.Math.Distance.Between(p.s.x, p.s.y, this.player.x, this.player.y) < 34) {
+        // the coin flies into the counter: one sound, "+1", nothing else
+        p.taken = true;
+        const cam = this.cameras.main, n = p.e.kind === 'gem' ? 3 : 1;
+        this.floatText('+' + n, p.s.x, p.s.y - 24, '#ffe066', 24);
+        this.tweens.killTweensOf(p.s);
+        this.tweens.add({ targets: p.s, x: cam.scrollX + 44, y: cam.scrollY + 39, scale: p.s.scale * 0.7, duration: 450, ease: 'Quad.in', onComplete: () => { p.s.destroy(); this.addCoins(n); } });
+      }
+    }
+    for (const key of this.keyEnts) {
+      if (!key.sprite.active || key.sprite.alpha < 1) continue;
+      if (Phaser.Math.Distance.Between(key.px, key.py, this.player.x, this.player.y) < 30) { this.touchKey(key); break; }
+    }
+    if (this.stairs && Phaser.Math.Distance.Between(this.stairs.sprite.x, this.stairs.sprite.y, this.player.x, this.player.y) < 34) this.floorComplete();
+  }
+}
+
+Promise.all([document.fonts.load('900 40px Cinzel'), document.fonts.load('900 20px Nunito'), loadManifest()]).catch(() => {}).then(() => {
+  new Phaser.Game({
+    type: Phaser.AUTO, parent: 'game', backgroundColor: '#0d1b2a',
+    // smooth shrinking of the pictures (needs power-of-two image sizes, see tools/pot.py)
+    render: { antialias: true, mipmapFilter: 'LINEAR_MIPMAP_LINEAR' },
+    physics: { default: 'arcade', arcade: { debug: false } },
+    // drawn HD times bigger than the 1280x720 design and zoomed, so it stays sharp on any screen (see common.js)
+    scale: { mode: Phaser.Scale.FIT, autoCenter: Phaser.Scale.CENTER_BOTH, width: Math.round(W * HD), height: Math.round(H * HD) },
+    scene: Maze,
+  });
+});
+</script>
+</body>
+</html>

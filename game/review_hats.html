@@ -1,0 +1,55 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Hat review</title>
+<link href="https://fonts.googleapis.com/css2?family=Cinzel:wght@700;900&family=Nunito:wght@700;900&display=swap" rel="stylesheet">
+<style> html, body { margin: 0; background: #2b3245; } </style>
+<script src="https://cdn.jsdelivr.net/npm/phaser@3.80.1/dist/phaser.min.js"></script>
+<script src="common.js"></script>
+</head>
+<body>
+<script>
+// Review sheet (for grown-ups, not part of the games): every head thing from Hermes' Shop on every picture of the hero,
+// drawn by the same Gear code the games use. Open http://localhost:8123/review_hats.html
+const HATS = ['flowers', 'tiara', 'crown'];
+const POSES = [  // [label, texture, frame, mirrored]
+  ['Toward us', 'hero_walk', 0, false], ['Walking right', 'hero_walk', 9, false], ['Walking left', 'hero_walk', 5, false],
+  ['Away from us', 'hero_walk', 13, false], ['Jump right', 'hero_jump', '__BASE', false], ['Jump left', 'hero_jump', '__BASE', true],
+];
+const TW = 230, TH = 250, LEFT = 210, TOP = 70, W = LEFT + TW * POSES.length + 20, H = TOP + TH * HATS.length + 20;
+class Review extends Phaser.Scene {
+  preload() {
+    this.load.spritesheet('hero_walk', 'assets/sprites/hero_walk.png', { frameWidth: 256, frameHeight: 256 });
+    this.load.image('hero_jump', 'assets/sprites/hero_jump.png');
+    HATS.forEach(id => Gear.VIEWS.forEach(v => { const f = `assets/shop/${id}_${v}.png`; if (assetExists(f)) this.load.image(`gear_${id}_${v}`, f); }));
+  }
+  create() {
+    const t = (x, y, s, size, o = 0.5) => this.add.text(x, y, s, { fontFamily: 'Cinzel', fontSize: size, fontStyle: '900', color: '#ffd43b' }).setOrigin(o, 0.5);
+    POSES.forEach(([label], c) => t(LEFT + TW * c + TW / 2, TOP - 30, label, 20));
+    this.gears = [];
+    HATS.forEach((id, r) => {
+      t(20, TOP + TH * r + TH / 2, GEAR_ITEMS[id][0], 20, 0);
+      POSES.forEach(([, key, frame, mirror], c) => {
+        const cx = LEFT + TW * c + TW / 2, top = TOP + TH * r;
+        this.add.rectangle(cx, top + TH / 2, TW - 10, TH - 10, (r + c) % 2 ? 0x4a5672 : 0x56627f).setStrokeStyle(2, 0x2b1a0a);
+        // a close-up: her head in the upper part of the tile, the rest of her cut off by the tile
+        const SC = 1.45, a = Gear.anchor(this, key, frame), oy = 0.97;
+        const hero = this.add.sprite(0, 0, key, frame).setOrigin(0.5, oy).setFlipX(mirror).setScale(SC);
+        hero.setPosition(cx - (a.x - a.w / 2) * SC * (mirror ? -1 : 1), top + 95 - (a.y - oy * a.fh) * SC);
+        const mask = this.make.graphics().fillRect(cx - TW / 2 + 6, top + 6, TW - 12, TH - 12).createGeometryMask();
+        Gear.VIEWS.forEach(v => Gear.texture(this, id, v));
+        const g = { scene: this, hero, facing: mirror ? -1 : 1, lastX: hero.x, lastY: hero.y, t: 0, walked: 0, headId: id,
+                    head: this.add.image(0, 0, `gear_${id}_front`) };
+        hero.setMask(mask); g.head.setMask(mask);
+        this.gears.push(g);
+      });
+    });
+    this.events.on('postupdate', () => this.gears.forEach(g => Gear.update(g, 0.016)));
+    window.review = this;
+  }
+}
+loadManifest().then(() => new Phaser.Game({ type: Phaser.AUTO, width: W, height: H, backgroundColor: '#2b3245', scene: Review, render: { antialias: true } }));
+</script>
+</body>
+</html>

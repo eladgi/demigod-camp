@@ -1,0 +1,1160 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Climb to Olympus</title>
+<link href="https://fonts.googleapis.com/css2?family=Cinzel:wght@700;900&family=Nunito:wght@700;900&display=swap" rel="stylesheet">
+<style>
+  html, body { margin: 0; height: 100%; background: #0d1b2a; overflow: hidden; }
+  #game { width: 100%; height: 100%; }
+</style>
+<script src="https://cdn.jsdelivr.net/npm/phaser@3.80.1/dist/phaser.min.js"></script>
+<script src="common.js"></script>
+<script src="phrases.js"></script>
+</head>
+<body>
+<div id="game"></div>
+<script>
+// =====================================================================
+//  WORLDS   (sentences, commands and opposites come from phrases.js: OLYMPUS)
+// =====================================================================
+const W = 1280, H = 720, GROUND = 600;
+const ALL_CMDS = ['jump', 'duck', 'dontjump', 'stop', 'run'];
+const WORLDS = [
+  { name: 'World 1', sub: 'The Forest', sky: ['#7ec8ff', '#e3f6ff'], far: 0x8fbf8a, near: 0x4f9a55, ground: [0x6b4a2b, 0x5fbf4a],
+    cmds: ['jump', 'duck'], rounds: 2,
+    segs: ['cmd', 'bridge', 'opp:rock', 'cmd', 'bridge', 'opp:door', 'cmd'] },
+  { name: 'World 2', sub: 'The River', sky: ['#5fb6e8', '#d7f1ff'], far: 0x7aa7c9, near: 0x4d8a9e, ground: [0x8a6a3a, 0xe8d29a],
+    cmds: ['jump', 'duck', 'stop'], rounds: 2,
+    segs: ['route', 'cmd', 'bridge', 'opp:river', 'cmd', 'route', 'bridge', 'opp:wind', 'cmd'], routes: ['swim', 'climb'] },
+  { name: 'World 3', sub: 'The Cliffs', sky: ['#f2a65a', '#ffe3b8'], far: 0xb98a6a, near: 0x8a5f45, ground: [0x6e5a50, 0xb3a49a],
+    cmds: ['jump', 'duck', 'stop', 'dontjump', 'run'], rounds: 3,
+    segs: ['route', 'cmd', 'bridge', 'opp:cloud', 'route', 'cmd', 'bridge', 'opp:rock', 'cmd'], routes: ['climb', 'swim', 'fly'] },
+  { name: 'World 4', sub: 'The Clouds', sky: ['#a98be8', '#ffe7f6'], far: 0xe8e0ff, near: 0xd2c8f5, ground: [0xc9c3e6, 0xffffff],
+    cmds: ALL_CMDS, rounds: 3,
+    segs: ['route', 'cmd', 'bridge', 'opp:monster', 'cmd', 'route', 'bridge', 'opp:any', 'boss'], routes: ['fly', 'climb', 'swim'] },
+];
+const NEED_HE_AFTER = 2;
+const sayZ = t => say(t, 'zeus');   // everything in this game is said by Zeus (his own ElevenLabs voice)
+
+// ---------- sounds ----------
+const sfx = {
+  jump: () => tone(300, 700, .12, 'triangle', .06),
+  coin: () => { tone(988, 988, .06, 'square', .04); setTimeout(() => tone(1319, 1319, .12, 'square', .04), 60); },
+  good: () => [659, 988].forEach((f, i) => setTimeout(() => tone(f, f, .12, 'square', .06), i * 90)),
+  wrong: () => { tone(300, 200, .12, 'square', .07); setTimeout(() => tone(220, 150, .18, 'square', .07), 110); },
+  hit: () => tone(220, 70, .35, 'sawtooth', .1),
+  magic: () => [784, 988, 1175, 1568].forEach((f, i) => setTimeout(() => tone(f, f, .1, 'triangle', .06), i * 55)),
+  thunder: () => { tone(90, 40, .9, 'sawtooth', .16); tone(160, 60, .5, 'square', .06); },
+  crumble: () => tone(200, 50, .4, 'sawtooth', .08),
+  splash: () => tone(500, 120, .3, 'triangle', .07),
+  roar: () => { tone(120, 55, .8, 'sawtooth', .14); tone(170, 80, .8, 'square', .05); },
+  win: () => [523, 659, 784, 1047].forEach((f, i) => setTimeout(() => tone(f, f, .25, 'square', .07), i * 140)),
+};
+const pick = a => a[Math.floor(Math.random() * a.length)];
+// what each magic button shows: a picture, never the word (she has to understand what Zeus said)
+const OPP_ICON = { big: ['🪨', 64], small: ['🪨', 26], open: ['🔓', 48], close: ['🔒', 48], hot: ['🔥', 48], cold: ['❄️', 48],
+                   fast: ['🐇', 48], slow: ['🐢', 48], up: ['⬆️', 48], down: ['⬇️', 48], happy: ['😄', 48], sad: ['😢', 48] };
+const shuffle = a => Phaser.Utils.Array.Shuffle(a.slice());
+
+// =====================================================================
+//  SCENE
+// =====================================================================
+class Climb extends Phaser.Scene {
+  constructor() { super('climb'); }
+  init(d) { this.worldIndex = d.world ?? 0; this.coins = d.coins ?? 0; this.showTitle = d.title ?? true; }
+
+  preload() {
+    Gear.preload(this);   // pet / crown from Hermes' Shop
+    this.load.on('loaderror', () => {});
+    const img = (k, p) => { if (assetExists(p)) this.load.image(k, p); };
+    img('hero', 'assets/hero.png');
+    img('hero_duck', 'assets/sprites/hero_duck.png');
+    img('hero_jump', 'assets/sprites/hero_jump.png');
+    img('hero_swim', 'assets/sprites/hero_swim.png');
+    if (assetExists('assets/olympus/victory.jpg')) this.load.image('art_victory', 'assets/olympus/victory.jpg');
+    if (assetExists('assets/sprites/hero_walk.png')) this.load.spritesheet('hero_walk', 'assets/sprites/hero_walk.png', { frameWidth: 256, frameHeight: 256 });
+    // Nano Banana art when it exists (placeholders otherwise)
+    ['boulder', 'harpy', 'cyclops', 'typhon', 'pegasus', 'zeus', 'monster', 'monster_happy', 'monster_sad', 'rock', 'tornado',
+     'storm_cloud', 'stone', 'vine', 'olympus', 'stairs_up', 'door_frame', 'door_leaf', 'ice', 'dry_bed', 'river_water', 'river_ice', 'river_hot', 'wall_climb'].forEach(n => img('art_' + n, 'assets/olympus/' + n + '.png'));
+    for (let k = 1; k <= 4; k++) img('art_bg' + k, `assets/olympus/bg${k}.jpg`);
+  }
+
+  has(k) { return this.textures.exists(k); }
+  // height of the drawn part of a picture (without the empty space around it), measured once
+  drawnHeight(key, frame) {
+    this._dh = this._dh || {};
+    const id = key + ':' + frame;
+    if (this._dh[id] === undefined) {
+      const f = this.textures.getFrame(key, frame), c = document.createElement('canvas');
+      c.width = f.cutWidth; c.height = f.cutHeight;
+      const x = c.getContext('2d'); x.drawImage(f.source.image, f.cutX, f.cutY, f.cutWidth, f.cutHeight, 0, 0, f.cutWidth, f.cutHeight);
+      const d = x.getImageData(0, 0, c.width, c.height).data;
+      let top = c.height, bottom = 0;
+      for (let y = 0; y < c.height; y++) for (let i = 0; i < c.width; i++) if (d[(y * c.width + i) * 4 + 3] > 40) { if (y < top) top = y; bottom = y; break; }
+      this._dh[id] = Math.max(1, bottom - top + 1);
+    }
+    return this._dh[id];
+  }
+  fit(o, w, h) { o.setScale(Math.min(w / o.width, h / o.height)); return o; }
+  // a picture if the art exists, otherwise a big emoji
+  art(key, x, y, size, emoji) {
+    if (this.has('art_' + key)) return this.fit(this.add.image(x, y, 'art_' + key), size, size);
+    return this.add.text(x, y, emoji, { fontSize: Math.round(size * 0.8) }).setOrigin(0.5);
+  }
+
+  makeTextures() {
+    const g = this.make.graphics({ add: false });
+    const wd = this.wd = WORLDS[this.worldIndex];
+    const tex = (k, w, h, draw) => { if (this.has(k)) this.textures.remove(k); draw(); g.generateTexture(k, w, h); g.clear(); };
+    if (!this.has('px')) { g.fillStyle(0xffffff, 0).fillRect(0, 0, 4, 4).generateTexture('px', 4, 4); g.clear(); }
+    this.makeGround(wd);
+    tex('gate', 40, 240, () => {
+      for (let k = 0; k < 8; k++) g.fillStyle(0xffd43b, 0.08 + k * 0.03).fillRoundedRect(k * 2, 0, 40 - k * 4, 240, 18);
+      g.fillStyle(0xffffff, 0.8).fillRect(18, 0, 4, 240);
+    });
+    tex('stone', 120, 44, () => {
+      g.fillStyle(0x2b1a0a).fillRoundedRect(0, 4, 120, 40, 14).fillStyle(0xe8e0cf).fillRoundedRect(3, 0, 114, 38, 12);
+      g.fillStyle(0xc9bfa9).fillRoundedRect(3, 26, 114, 12, 8);
+    });
+    tex('soft', 20, 20, () => { for (let r = 10; r > 0; r -= 2) g.fillStyle(0xffffff, 0.15).fillCircle(10, 10, r); });
+    tex('dot', 12, 12, () => g.fillStyle(0xffffff).fillCircle(6, 6, 6));
+    tex('coin', 28, 28, () => g.fillStyle(0x7a5600).fillCircle(14, 14, 14).fillStyle(0xffc400).fillCircle(14, 14, 11).fillStyle(0xfff3a0).fillCircle(10, 10, 4));
+    tex('vine', 40, 64, () => {
+      g.fillStyle(0x2f7a32).fillRect(16, 0, 8, 64);
+      g.fillStyle(0x4fbf55).fillEllipse(10, 14, 16, 10).fillEllipse(30, 34, 16, 10).fillEllipse(10, 54, 16, 10);
+    });
+    g.destroy();
+    // sky gradient + two layers of mountains (drawn on canvases)
+    const sky = this.textures.exists('sky') ? this.textures.get('sky') : this.textures.createCanvas('sky', 64, 360);
+    const sc = sky.getContext(), gr = sc.createLinearGradient(0, 0, 0, 360);
+    gr.addColorStop(0, wd.sky[0]); gr.addColorStop(1, wd.sky[1]); sc.fillStyle = gr; sc.fillRect(0, 0, 64, 360); sky.refresh();
+    const hills = (key, color, base, amp, seed) => {
+      if (this.textures.exists(key)) this.textures.remove(key);
+      const c = this.textures.createCanvas(key, 1280, 400), x = c.getContext();
+      x.fillStyle = '#' + color.toString(16).padStart(6, '0'); x.beginPath(); x.moveTo(0, 400);
+      for (let i = 0; i <= 1280; i += 20) x.lineTo(i, base - Math.abs(Math.sin(i / 160 + seed) * amp) - Math.sin(i / 47 + seed * 3) * amp * 0.15);
+      x.lineTo(1280, 400); x.closePath(); x.fill(); c.refresh();
+    };
+    hills('far', wd.far, 210, 150, 1.3);
+    hills('near', wd.near, 300, 90, 4.1);
+  }
+
+  // the ground: painted on a canvas so it has depth like the backgrounds (shaded soil, stones, a soft top layer
+  // with a scalloped edge and a highlight) plus a fringe that sticks up above it (grass blades / cloud puffs)
+  makeGround(wd) {
+    const mix = (c, to, f) => { const a = [c >> 16, (c >> 8) & 255, c & 255], b = [to >> 16, (to >> 8) & 255, to & 255];
+      return 'rgb(' + a.map((v, i) => Math.round(v + (b[i] - v) * f)).join(',') + ')'; };
+    const [soil, top] = wd.ground, TW = 512, TH = 160, wi = this.worldIndex;
+    let seed = 7 + wi * 31; const rnd = () => (seed = (seed * 16807) % 2147483647) / 2147483647;
+    ['groundtex', 'groundfringe'].forEach(k => { if (this.textures.exists(k)) this.textures.remove(k); });
+    const c = this.textures.createCanvas('groundtex', TW, TH), x = c.getContext();
+    const gr = x.createLinearGradient(0, 0, 0, TH);
+    gr.addColorStop(0, mix(soil, 0xffffff, 0.08)); gr.addColorStop(1, mix(soil, 0x000000, 0.38));
+    x.fillStyle = gr; x.fillRect(0, 0, TW, TH);
+    // layers in the soil
+    x.lineCap = 'round';
+    for (let k = 0; k < (wi === 3 ? 0 : 5); k++) {
+      const y = 50 + k * 24 + rnd() * 8; x.strokeStyle = mix(soil, 0x000000, 0.22); x.lineWidth = 3; x.globalAlpha = 0.5;
+      x.beginPath(); for (let i = 0; i <= TW; i += 16) x.lineTo(i, y + Math.sin(i / TW * Math.PI * 4 + k) * 4); x.stroke();
+    }
+    x.globalAlpha = 1;
+    // stones with a light side and a dark side
+    if (wi === 3) for (let k = 0; k < 14; k++) {   // cloud: big soft lighter and darker puffs
+      x.globalAlpha = 0.35; x.fillStyle = mix(soil, k % 2 ? 0xffffff : 0x8a7fc0, 0.6);
+      x.beginPath(); x.ellipse(rnd() * TW, 50 + rnd() * 100, 40 + rnd() * 40, 14 + rnd() * 10, 0, 0, 7); x.fill(); x.globalAlpha = 1;
+    }
+    for (let k = 0; k < (wi === 3 ? 0 : 16); k++) {
+      const sx = 20 + rnd() * (TW - 40), sy = 48 + rnd() * (TH - 60), r = 5 + rnd() * 9;
+      x.fillStyle = mix(soil, 0x000000, 0.35); x.beginPath(); x.ellipse(sx, sy + 2, r + 1.5, r * 0.75 + 1.5, 0, 0, 7); x.fill();
+      x.fillStyle = mix(soil, 0xffffff, 0.22 + rnd() * 0.15); x.beginPath(); x.ellipse(sx, sy, r, r * 0.75, 0, 0, 7); x.fill();
+      x.fillStyle = mix(soil, 0xffffff, 0.5); x.beginPath(); x.ellipse(sx - r * 0.25, sy - r * 0.25, r * 0.4, r * 0.25, 0, 0, 7); x.fill();
+    }
+    // the top layer: shadow under it, scalloped lower edge, highlight on top
+    const TOP = 26, scallop = (dy, fill) => { x.fillStyle = fill; x.beginPath(); x.rect(0, 0, TW, TOP - 6 + dy);
+      for (let i = 0; i < TW; i += 32) { x.moveTo(i + 16, TOP - 6 + dy); x.ellipse(i + 16, TOP - 6 + dy, 17, 9 + (i / 32 % 3) * 2, 0, 0, Math.PI); } x.fill(); };
+    x.globalAlpha = 0.3; scallop(7, mix(soil, 0x000000, 0.8)); x.globalAlpha = 1;
+    scallop(0, mix(top, 0x000000, 0.14));
+    x.fillStyle = mix(top, 0xffffff, 0.04); x.fillRect(0, 0, TW, TOP - 12);
+    x.fillStyle = mix(top, 0xffffff, 0.32); x.fillRect(0, 0, TW, 6);
+    x.fillStyle = mix(top, 0x000000, 0.2); for (let k = 0; k < 40; k++) x.fillRect(rnd() * TW, 8 + rnd() * 8, 3 + rnd() * 5, 2);
+    c.refresh();
+    if (!this.textures.exists('pool')) {
+      const pc = this.textures.createCanvas('pool', 32, 128), px = pc.getContext(), pg = px.createLinearGradient(0, 0, 0, 128);
+      pg.addColorStop(0, 'rgba(120,210,245,0.72)'); pg.addColorStop(0.25, 'rgba(46,134,222,0.74)'); pg.addColorStop(1, 'rgba(18,60,150,0.86)');
+      px.fillStyle = pg; px.fillRect(0, 0, 32, 128); pc.refresh();
+      const wc = this.textures.createCanvas('wave', 128, 16), wx = wc.getContext();
+      wx.fillStyle = 'rgba(255,255,255,0.85)'; wx.beginPath(); wx.moveTo(0, 16);
+      for (let i = 0; i <= 128; i += 4) wx.lineTo(i, 7 - Math.sin(i / 128 * Math.PI * 4) * 4);
+      wx.lineTo(128, 16); wx.closePath(); wx.fill();
+      wx.fillStyle = 'rgba(120,210,245,1)'; wx.beginPath(); wx.moveTo(0, 16);
+      for (let i = 0; i <= 128; i += 4) wx.lineTo(i, 11 - Math.sin(i / 128 * Math.PI * 4) * 4);
+      wx.lineTo(128, 16); wx.closePath(); wx.fill(); wc.refresh();
+    }
+    // the fringe above the ground
+    const f = this.textures.createCanvas('groundfringe', TW, 20), fx = f.getContext();
+    if (wi === 0) for (let i = 0; i < TW; i += 6) {
+      const h = 6 + rnd() * 13, lean = (rnd() - 0.5) * 8;
+      fx.fillStyle = mix(top, rnd() < 0.5 ? 0xffffff : 0x000000, rnd() * 0.25);
+      fx.beginPath(); fx.moveTo(i - 4, 20); fx.lineTo(i + lean, 20 - h); fx.lineTo(i + 5, 20); fx.fill();
+    } else if (wi === 3) for (let i = 0; i < TW; i += 32) {
+      fx.fillStyle = mix(top, 0xffffff, 0.3); fx.beginPath(); fx.ellipse(i + 16, 20, 18, 9 + (i / 32 % 3) * 4, 0, Math.PI, 0); fx.fill();
+    } else for (let i = 0; i < TW; i += 64) {   // sand / rock: a few low bumps
+      fx.fillStyle = mix(top, 0xffffff, 0.3); fx.beginPath(); fx.ellipse(i + 20 + rnd() * 20, 20, 16, 4, 0, Math.PI, 0); fx.fill();
+    }
+    f.refresh();
+  }
+
+  makeAnims() {
+    if (!this.has('hero_walk') || this.anims.exists('h_right')) return;
+    [['h_left', 4], ['h_right', 8], ['h_up', 12]].forEach(([k, s]) => this.anims.create({ key: k, frames: this.anims.generateFrameNumbers('hero_walk', { start: s, end: s + 3 }), frameRate: 10, repeat: -1 }));
+  }
+
+  // =====================================================================
+  //  BUILD THE WORLD
+  // =====================================================================
+  create() {
+    // the scene object is reused between worlds: clear everything left over from the previous world
+    Object.assign(this, { exitX: null, watching: null, eye: null, eyeTimer: null, watcher: null, casting: false, swimBody: false,
+                          lastSaid: null, farHills: null, nearHills: null });
+    this.makeTextures(); this.makeAnims();
+    const wd = this.wd;
+    this.solids = this.physics.add.staticGroup();
+    this.gates = this.physics.add.staticGroup();
+    this.stones = this.physics.add.staticGroup();
+    this.threats = [];
+    this.bg = [];
+
+    // background (its own camera, below everything)
+    if (this.has('art_bg' + (this.worldIndex + 1))) {
+      const b = this.add.image(W / 2, H / 2, 'art_bg' + (this.worldIndex + 1)); b.setScale(Math.max(W / b.width, H / b.height)); b.isBg = true; this.bg.push(b);
+    } else {
+      const s = this.add.image(W / 2, H / 2, 'sky').setDisplaySize(W, H); s.isBg = true;
+      this.farHills = this.add.tileSprite(W / 2, H - 200, W, 400, 'far'); this.farHills.isBg = true;
+      this.nearHills = this.add.tileSprite(W / 2, H - 150, W, 400, 'near'); this.nearHills.isBg = true;
+      this.bg.push(s, this.farHills, this.nearHills);
+      // Olympus on the horizon
+      const ol = this.art('olympus', W - 180, 150, 180, '🏛️'); ol.isBg = true; ol.setAlpha(0.9); this.bg.push(ol);
+    }
+
+    // the course: start, the challenges of this world, the way up
+    let x = 0;
+    this.ground(0, 520);
+    x = 520;
+    this.segs = [];
+    wd.segs.forEach((type, i) => { const seg = this.buildSeg(type, x, i); this.segs.push(seg); x = seg.x1; });
+    const last = this.segs[this.segs.length - 1];
+    if (last.type !== 'boss') {
+      this.ground(x, x + 700);
+      this.exitX = x + 420;
+      // mountain path up (the end of the world)
+      if (this.has('art_stairs_up')) {
+        const st = this.add.image(this.exitX - 20, GROUND + 8, 'art_stairs_up').setOrigin(0, 1).setDepth(2);
+        st.setScale(300 / st.width);
+      } else {
+      const steps = this.add.graphics().setDepth(2);
+      for (let k = 0; k < 5; k++) steps.fillStyle(0x2b1a0a).fillRect(this.exitX + k * 40, GROUND - 22 - k * 22, 200 - k * 40, 24).fillStyle(0xe8dcc0).fillRect(this.exitX + k * 40 + 2, GROUND - 22 - k * 22, 196 - k * 40, 20);
+      }
+      this.add.text(this.exitX + 100, GROUND - 170, '⬆ Olympus', { fontFamily: 'Cinzel', fontSize: 26, fontStyle: '900', color: '#ffd43b', stroke: '#2b1a0a', strokeThickness: 6 }).setOrigin(0.5).setDepth(3);
+      x += 700;
+    }
+    this.worldW = x;
+    this.physics.world.setBounds(0, -400, x, H + 600);
+
+    // hero: invisible physics box + picture
+    this.player = this.physics.add.image(160, GROUND - 60, 'px').setVisible(false);
+    this.player.body.setSize(40, 88).setGravityY(1600).setMaxVelocityY(1100).setCollideWorldBounds(true);
+    this.physics.add.collider(this.player, this.solids);
+    this.physics.add.collider(this.player, this.gates);
+    this.physics.add.collider(this.player, this.stones, (p, s) => this.onStone(s));
+    this.animated = this.has('hero_walk');
+    this.heroImg = (this.animated ? this.add.sprite(0, 0, 'hero_walk', 8) : this.add.image(0, 0, 'hero')).setOrigin(0.5, 0.97).setDepth(10);
+    this.heroScale = this.animated ? 138 / 256 : 130 / this.heroImg.height;
+    // the pet needs to know what she is doing (a walking pet waits while she climbs, swims or rides the Pegasus)
+    this.gear = Gear.attach(this, this.heroImg, { state: () => this.climbing ? 'climb' : this.riding ? 'ride' : this.swimming ? 'swim'
+      : (this.player.body.blocked.down || this.player.body.touching.down) ? 'ground' : 'air' });
+    this.heroImg.setScale(this.heroScale);
+    this.facing = 1; this.ducking = false; this.climbing = false; this.swimming = false; this.riding = false;
+    this.checkpoint = { x: 160, y: GROUND - 60 };
+
+    const cam = this.cameras.main;
+    cam.setBounds(0, 0, this.worldW, H).setZoom(HD).startFollow(this.player, true, 0.12, 0.12, -200, 60);
+    this.uiCam = this.cameras.add(0, 0, Math.round(W * HD), Math.round(H * HD)).setOrigin(0, 0).setZoom(HD);
+    this.bgCam = this.cameras.add(0, 0, Math.round(W * HD), Math.round(H * HD)).setOrigin(0, 0).setZoom(HD);
+    // background camera draws first
+    this.cameras.cameras.splice(this.cameras.cameras.indexOf(this.bgCam), 1); this.cameras.cameras.unshift(this.bgCam);
+    cam.transparent = true;
+    this.bg.forEach(b => b.setScrollFactor(0));
+
+    this.keys = this.input.keyboard.addKeys({ left: 'LEFT', right: 'RIGHT', up: 'UP', down: 'DOWN', a: 'A', d: 'D', w: 'W', s: 'S', z: 'Z', x: 'X', r: 'R', enter: 'ENTER', space: 'SPACE' });
+    this.input.keyboard.on('keydown-ESC', goToCamp);
+    this.sparks = this.add.particles(0, 0, 'soft', { speed: { min: 60, max: 220 }, lifespan: 650, scale: { start: 1.5, end: 0 }, tint: [0xffd43b, 0xfff3a0, 0xffffff], blendMode: 'ADD', emitting: false }).setDepth(30);
+    this.dust = this.add.particles(0, 0, 'dot', { speed: { min: 40, max: 160 }, lifespan: 600, scale: { start: 0.8, end: 0 }, tint: [0x8a7560, 0xb3a49a], emitting: false }).setDepth(30);
+
+    this.buildHud();
+    this.segIndex = -1; this.state = 'play'; this.busy = false;
+    if (this.showTitle) {
+      this.state = 'title';
+      this.overlay('Climb to Olympus', 'You are the daughter of Zeus!\nListen to your father and climb the mountain.\n\n←  →  run      ↑  jump / climb      ↓  duck      Z / X  magic pictures      R  hear again', 'Play', () => this.beginWorld());
+    } else this.beginWorld();
+    window.olympus = this; // for testing
+  }
+
+  ground(x1, x2, y = GROUND) {
+    const t = this.add.tileSprite((x1 + x2) / 2, y + 80, x2 - x1, 160, 'groundtex').setDepth(4);
+    this.physics.add.existing(t, true); this.solids.add(t);
+    this.add.tileSprite((x1 + x2) / 2, y - 9, x2 - x1, 20, 'groundfringe').setDepth(4);
+    return t;
+  }
+  block(x, y, w, h, color = 0x8a7560) {
+    const r = this.add.rectangle(x, y, w, h, color).setStrokeStyle(4, 0x2b1a0a).setDepth(4);
+    this.physics.add.existing(r, true); this.solids.add(r);
+    return r;
+  }
+  gate(x) {
+    const g = this.gates.create(x, GROUND - 120, 'gate').setDepth(6);
+    this.tweens.add({ targets: g, alpha: { from: 0.75, to: 1 }, duration: 500, yoyo: true, repeat: -1 });
+    return g;
+  }
+  openGate(g) { if (!g || !g.active) return; g.disableBody(true, false); this.tweens.killTweensOf(g); this.tweens.add({ targets: g, alpha: 0, scaleY: 0.1, duration: 400, onComplete: () => g.destroy() }); this.sparks.explode(20, g.x, g.y); }
+
+  // ---------- challenge sections ----------
+  buildSeg(type, x0, i) {
+    const [kind, sub] = type.split(':');
+    const seg = { type: kind, sub, x0, i, done: false, fails: 0 };
+    if (kind === 'cmd') {
+      this.ground(x0, x0 + 1000);
+      seg.x1 = x0 + 1000; seg.gate = this.gate(x0 + 960);
+    }
+    if (kind === 'bridge') {
+      this.ground(x0, x0 + 260);
+      const list = OLYMPUS.sentences[this.worldIndex + 1];
+      this.lastSentences = this.lastSentences || [];
+      const [sentence, he] = pick(list.filter(s => !this.lastSentences.includes(s[0])));
+      this.lastSentences.push(sentence);
+      const words = sentence.split(' ');
+      const pool = OLYMPUS.distractors.filter(d => !words.map(w => w.toLowerCase()).includes(d));
+      const seq = []; let lastD = false;
+      words.forEach(w => { if (!lastD && seq.length && Math.random() < 0.6) { seq.push({ word: pick(pool), correct: false }); lastD = true; } else lastD = false; seq.push({ word: w, correct: true }); });
+      if (Math.random() < 0.5) seq.push({ word: pick(pool), correct: false });
+      const c0 = x0 + 260;
+      seg.stones = seq.map((s, k) => {
+        const sx = c0 + 115 + k * 125, sy = GROUND - (k % 2 ? 110 : 40);
+        const st = this.stones.create(sx, sy, 'stone').setDepth(5);
+        Object.assign(st.body.checkCollision, { down: false, left: false, right: false });
+        st.label = this.add.text(sx, sy - 3, s.word, { fontFamily: 'Nunito', fontSize: 25, fontStyle: '900', color: '#2b1a0a' }).setOrigin(0.5).setDepth(6);
+        Object.assign(st, { word: s.word, home: { x: sx, y: sy }, state: 'idle', seg });
+        return st;
+      });
+      const cEnd = c0 + 115 + (seq.length - 1) * 125 + 150;
+      this.ground(cEnd, cEnd + 260);
+      seg.gate = this.gate(cEnd + 30);   // opens only when the sentence is complete (segDone)
+      seg.gate.setDisplaySize(40, 440).setY(GROUND - 220).refreshBody();   // tall: can't be jumped over from the high stones
+      Object.assign(seg, { sentence, he, words, next: 0, x1: cEnd + 260 });
+    }
+    if (kind === 'opp') {
+      const t = sub === 'any' ? pick(Object.keys(OLYMPUS.opposites)) : sub;
+      seg.sub = t;
+      const ox = x0 + 560;
+      if (t === 'river') {
+        this.ground(x0, ox - 160); this.ground(ox + 160, x0 + 1000);
+        seg.water = this.add.rectangle(ox, GROUND + 70, 320, 140, 0x2e86de, 0.85).setDepth(5);
+        if (this.has('art_river_water')) {
+          seg.water.setAlpha(0);
+          seg.riverImg = this.add.image(ox, GROUND + 60, 'art_river_water').setDisplaySize(340, 150).setDepth(5);
+        }
+        seg.wall = this.block(ox - 150, GROUND - 200, 20, 400, 0x000000); seg.wall.setAlpha(0);
+        seg.obj = seg.water;
+      } else {
+        this.ground(x0, x0 + 1000);
+        seg.wall = this.block(ox, GROUND - 200, 60, 400, 0x000000); seg.wall.setAlpha(0);
+        if (t === 'rock') seg.obj = this.art('rock', ox, GROUND - 70, 150, '🪨');
+        if (t === 'door') {
+          if (this.has('art_door_frame') && this.has('art_door_leaf')) {
+            seg.obj = this.fit(this.add.image(ox, GROUND - 120, 'art_door_frame'), 260, 260);
+            // the dark opening inside door_frame.png (measured): 30%-70% of the width, 25%-97.5% of the height
+            const f = seg.obj, fl = f.x - f.displayWidth / 2, ft = f.y - f.displayHeight / 2;
+            const oL = fl + 0.304 * f.displayWidth, oR = fl + 0.70 * f.displayWidth, oT = ft + 0.254 * f.displayHeight, oB = ft + 0.975 * f.displayHeight;
+            seg.door = this.add.image(oL, (oT + oB) / 2, 'art_door_leaf').setOrigin(0, 0.5).setDepth(7);
+            seg.door.setDisplaySize(oR - oL + 2, oB - oT + 2); seg.door.fullX = seg.door.scaleX; seg.door.scaleX = seg.door.fullX * 0.55;
+          } else {
+            seg.obj = this.add.container(ox, GROUND - 100, [this.add.rectangle(0, 0, 130, 200, 0x3b220e).setStrokeStyle(6, 0x2b1a0a), this.add.text(0, -20, '👀', { fontSize: 40 }).setOrigin(0.5)]);
+            seg.door = this.add.rectangle(ox - 60, GROUND - 100, 120, 196, 0x9a6a3a).setOrigin(0, 0.5).setStrokeStyle(5, 0x5b3a1e).setDepth(7);
+            seg.door.fullX = 1; seg.door.scaleX = 0.55;
+          }
+        }
+        if (t === 'wind') seg.obj = this.art('tornado', ox, GROUND - 110, 220, '🌪️');
+        if (t === 'cloud') seg.obj = this.art('storm_cloud', ox, GROUND - 90, 220, '⛈️');
+        if (t === 'monster') seg.obj = this.art('monster', ox, GROUND - 90, 180, '👹');
+      }
+      seg.obj.setDepth(6); seg.obj.base = seg.obj.scale; seg.obj.baseY = seg.obj.y; seg.ox = ox; seg.x1 = x0 + 1000;
+    }
+    if (kind === 'route') {
+      // a pool in front of a high wall: climb the vine, swim through the tunnel under the wall, or ride the Pegasus over it
+      const p0 = x0 + 560, wx = x0 + 790, p1 = x0 + 950;   // only a narrow strip of water after the wall (to come up from the tunnel)
+      this.ground(x0, p0); this.ground(p1, x0 + 1300);
+      this.block((p0 + p1) / 2, H + 10, p1 - p0, 40, 0x3b6e8a);                // pool floor
+      seg.wallBlk = this.block(wx, GROUND - 130, 160, 340, 0x7a6658);             // wall from GROUND-300 down to GROUND+40
+      if (this.has('art_wall_climb')) { seg.wallBlk.setAlpha(0); this.add.image(wx, GROUND - 130, 'art_wall_climb').setDisplaySize(176, 350).setDepth(4); }
+      seg.water = new Phaser.Geom.Rectangle(p0, GROUND + 10, p1 - p0, H - GROUND);
+      this.add.image((p0 + p1) / 2, (GROUND + 10 + H) / 2 + 5, 'pool').setDisplaySize(p1 - p0, H - GROUND - 10).setDepth(9);
+      const wave = this.add.tileSprite((p0 + p1) / 2, GROUND + 12, p1 - p0, 16, 'wave').setDepth(9);
+      this.tweens.add({ targets: wave, tilePositionX: 128, duration: 3200, repeat: -1 });
+      seg.vines = [];
+      if (this.has('art_vine')) { const v = this.add.image(wx - 92, GROUND - 140, 'art_vine').setDepth(5); v.setDisplaySize(170, 340); v.homeY = v.y; seg.vines.push(v); }
+      else for (let y = GROUND - 300; y < GROUND + 20; y += 64) { const v = this.add.image(wx - 92, y + 32, 'vine').setDepth(5); v.homeY = v.y; seg.vines.push(v); }
+      seg.zone = new Phaser.Geom.Rectangle(wx - 130, GROUND - 330, 55, 400);
+      seg.under = new Phaser.Geom.Rectangle(wx - 70, GROUND + 45, 140, H);        // the tunnel under the wall
+      seg.opts = this.wd.routes;
+      if (seg.opts.includes('fly')) {
+        seg.pegHome = { x: x0 + 330, y: GROUND - 70 };
+        seg.pegasus = this.art('pegasus', seg.pegHome.x, seg.pegHome.y, 150, '🦄').setDepth(8);
+        this.tweens.add({ targets: seg.pegasus, y: GROUND - 82, duration: 700, yoyo: true, repeat: -1, ease: 'Sine.inOut' });
+      }
+      Object.assign(seg, { p0, p1, wx, x1: x0 + 1300 });
+    }
+    if (kind === 'boss') {
+      this.ground(x0, x0 + 1500);
+      seg.gate = this.gate(x0 + 1440);
+      seg.typhon = this.art('typhon', x0 + 1180, GROUND - 200, 400, '🌪️').setDepth(6);
+      if (!this.has('art_typhon')) { seg.face = this.add.text(x0 + 1180, GROUND - 260, '😠', { fontSize: 110 }).setOrigin(0.5).setDepth(7); }
+      seg.x1 = x0 + 1500; seg.size = 1;
+    }
+    return seg;
+  }
+
+  // =====================================================================
+  //  HUD
+  // =====================================================================
+  buildHud() {
+    const d = 60, fix = o => { o.setScrollFactor(0).setDepth(d); return o; };
+    fix(this.add.graphics()).fillStyle(0x2b1a0a).fillRoundedRect(18, 21, 130, 46, 23).fillStyle(0xfff8e6).fillRoundedRect(18, 16, 130, 46, 23).lineStyle(4, 0x2b1a0a).strokeRoundedRect(18, 16, 130, 46, 23);
+    fix(this.add.image(44, 39, 'coin'));
+    this.coinText = fix(this.add.text(68, 22, String(this.coins), { fontFamily: 'Nunito', fontSize: 27, fontStyle: '900', color: '#2b1a0a' }));
+    fix(this.add.text(W - 20, 16, `${this.wd.name}: ${this.wd.sub}`, { fontFamily: 'Cinzel', fontSize: 24, fontStyle: '900', color: '#fff8e6', stroke: '#2b1a0a', strokeThickness: 6 }).setOrigin(1, 0));
+    this.progress = fix(this.add.graphics());
+    fix(this.add.text(W - 20, H - 16, '⌂ Camp', { fontFamily: 'Nunito', fontSize: 22, fontStyle: '900', color: '#fff8e6', stroke: '#2b1a0a', strokeThickness: 6 }).setOrigin(1, 1)).setInteractive({ useHandCursor: true }).on('pointerdown', goToCamp);
+    // Zeus speaking (top center)
+    this.bubble = fix(this.add.container(W / 2, 92)).setVisible(false);
+    this.bubbleBg = this.add.graphics();
+    if (this.has('art_zeus') && !this.has('zeus_round')) {
+      // cut a circle out of Zeus's portrait, zoomed on his face
+      const src = this.textures.get('art_zeus').getSourceImage(), N = 256, c = this.textures.createCanvas('zeus_round', N, N), x = c.getContext();
+      x.beginPath(); x.arc(N / 2, N / 2, N / 2, 0, Math.PI * 2); x.clip(); x.fillStyle = '#c9b8f5'; x.fillRect(0, 0, N, N);
+      const z = 1.45 * N / src.width; x.drawImage(src, (N - src.width * z) / 2 - N * 0.05, -N * 0.06, src.width * z, src.height * z); c.refresh();
+    }
+    const face = this.has('zeus_round') ? this.fit(this.add.image(0, 0, 'zeus_round'), 68, 68) : this.add.text(0, 2, '⚡', { fontSize: 40 }).setOrigin(0.5);
+    this.zface = this.add.container(0, -6, [this.add.circle(0, 0, 36, 0x7b5cd6), face, this.add.circle(0, 0, 36).setStrokeStyle(5, 0x2b1a0a)]);
+    this.bubbleText = this.add.text(0, -4, '', { fontFamily: 'Nunito', fontSize: 32, fontStyle: '900', color: '#2b1a0a' }).setOrigin(0, 0.5);
+    this.bubbleHe = this.add.text(0, 52, '', { fontFamily: 'Nunito', fontSize: 26, fontStyle: '900', color: '#ffe066', stroke: '#2b1a0a', strokeThickness: 6 }).setOrigin(0.5).setVisible(false);
+    this.bubble.add([this.bubbleBg, this.zface, this.bubbleText, this.bubbleHe]);
+    this.bubble.setSize(600, 80).setInteractive({ useHandCursor: true }).on('pointerdown', () => this.repeat());
+    // magic buttons (opposites)
+    this.spell = fix(this.add.container(W / 2, H - 70)).setVisible(false);
+    this.spellBtns = [-1, 1].map((s, k) => {
+      const c = this.add.container(s * 150, 0);
+      const bg = this.add.graphics().fillStyle(0x2b1a0a).fillRoundedRect(-120, -34, 240, 76, 22).fillStyle(0x7b5cd6).fillRoundedRect(-120, -40, 240, 76, 22).lineStyle(5, 0x2b1a0a).strokeRoundedRect(-120, -40, 240, 76, 22);
+      const key = this.add.text(-92, -2, k ? 'X' : 'Z', { fontFamily: 'Nunito', fontSize: 24, fontStyle: '900', color: '#2b1a0a', backgroundColor: '#fff8e6', padding: { x: 8, y: 2 } }).setOrigin(0.5);
+      const label = this.add.text(18, -2, '', { fontFamily: 'Nunito', fontSize: 36, fontStyle: '900', color: '#ffffff', stroke: '#2b1a0a', strokeThickness: 6 }).setOrigin(0.5);
+      c.add([bg, key, label]); c.label = label;
+      c.setSize(240, 76).setInteractive({ useHandCursor: true }).on('pointerdown', () => this.cast(k));
+      this.spell.add(c);
+      return c;
+    });
+    [this.spell, ...this.spell.list, ...this.spellBtns.flatMap(b => b.list), this.bubble, ...this.bubble.list].forEach(o => o.setScrollFactor(0));
+  }
+
+  drawProgress() {
+    const n = this.segs.length, done = this.segs.filter(s => s.done).length, x0 = W - 20 - n * 24;
+    this.progress.clear();
+    for (let i = 0; i < n; i++) this.progress.fillStyle(0x2b1a0a).fillCircle(x0 + i * 24 + 10, 60, 9).fillStyle(i < done ? 0xffd43b : 0x6b5a48).fillCircle(x0 + i * 24 + 10, 60, 6);
+  }
+
+  // Zeus says it, but the bubble shows only a speaker (and Hebrew help after mistakes)
+  listen(text, he, showHe) {
+    this.showLine('🔊');
+    this.bubbleHe.setText(he || '').setVisible(!!showHe && !!he);
+    this.lastSaid = text;
+    sayZ(text);
+  }
+
+  speak(text, he, showHe) {
+    this.bubbleText.setText(text); this.bubbleHe.setText(he || '').setVisible(!!showHe && !!he);
+    const w = this.bubbleText.width + 140, x0 = -w / 2;
+    this.zface.x = x0 + 46; this.bubbleText.x = x0 + 98;
+    this.bubbleBg.clear().fillStyle(0x2b1a0a).fillRoundedRect(x0, -32, w, 64, 32).fillStyle(0xffffff).fillRoundedRect(x0, -38, w, 64, 32).lineStyle(5, 0x2b1a0a).strokeRoundedRect(x0, -38, w, 64, 32);
+    this.bubble.setVisible(true).setScale(0.6); this.tweens.add({ targets: this.bubble, scale: 1, duration: 240, ease: 'Back.out' });
+    this.lastSaid = text;
+    sayZ(text);
+  }
+  repeat() { if (this.lastSaid) sayZ(this.lastSaid); }
+
+  floatText(txt, x, y, color = '#ffe066', size = 32) {
+    const t = this.add.text(x, y, txt, { fontFamily: 'Nunito', fontSize: size, fontStyle: '900', color, stroke: '#2b1a0a', strokeThickness: 6 }).setOrigin(0.5).setDepth(50);
+    this.tweens.add({ targets: t, y: y - 80, alpha: { from: 1, to: 0 }, duration: 1200, ease: 'Quad.out', onComplete: () => t.destroy() });
+  }
+  addCoins(n, x, y) {
+    for (let k = 0; k < n; k++) this.time.delayedCall(k * 70, () => { this.coins++; this.coinText.setText(String(this.coins)); Save.addCoins(1); sfx.coin(); });
+    if (x !== undefined) this.sparks.explode(8 + n * 2, x, y);
+  }
+
+  overlay(title, text, btn, onClick) {
+    const o = this.add.container(0, 0).setDepth(200);
+    o.add(this.add.rectangle(W / 2, H / 2, W, H, 0x050f1e, 0.78).setInteractive());
+    o.add(this.add.text(W / 2, 180, title, { fontFamily: 'Cinzel', fontSize: 76, fontStyle: '900', color: '#ffd43b', stroke: '#6b4400', strokeThickness: 10 }).setOrigin(0.5));
+    o.add(this.add.text(W / 2, 340, text, { fontFamily: 'Nunito', fontSize: 26, fontStyle: '700', color: '#ffffff', align: 'center', lineSpacing: 6 }).setOrigin(0.5));
+    const b = this.add.container(W / 2, 530);
+    b.add([this.add.graphics().fillStyle(0x2b1a0a).fillRoundedRect(-160, -32, 320, 76, 38).fillStyle(0xffd43b).fillRoundedRect(-160, -40, 320, 76, 38).lineStyle(5, 0x2b1a0a).strokeRoundedRect(-160, -40, 320, 76, 38),
+           this.add.text(0, -2, btn, { fontFamily: 'Cinzel', fontSize: 36, fontStyle: '900', color: '#2b1a0a' }).setOrigin(0.5)]);
+    const go = () => { if (!o.active) return; o.destroy(); onClick(); };
+    b.setSize(320, 76).setInteractive({ useHandCursor: true }).on('pointerdown', go).on('pointerover', () => b.setScale(1.06)).on('pointerout', () => b.setScale(1));
+    this.keys.enter.once('down', go);
+    o.add(b);
+    [o, b, ...o.list, ...b.list].forEach(c => c.setScrollFactor(0));
+  }
+
+  banner(title, sub) {
+    const t = this.add.text(W / 2, 290, title, { fontFamily: 'Cinzel', fontSize: 84, fontStyle: '900', color: '#ffd43b', stroke: '#6b4400', strokeThickness: 10 }).setOrigin(0.5).setDepth(120).setScrollFactor(0);
+    const s = this.add.text(W / 2, 380, sub, { fontFamily: 'Nunito', fontSize: 36, fontStyle: '900', color: '#fff', stroke: '#2b1a0a', strokeThickness: 7 }).setOrigin(0.5).setDepth(120).setScrollFactor(0);
+    this.tweens.add({ targets: [t, s], scale: { from: 0.4, to: 1 }, duration: 400, ease: 'Back.out' });
+    this.tweens.add({ targets: [t, s], alpha: 0, delay: 1600, duration: 400, onComplete: () => { t.destroy(); s.destroy(); } });
+  }
+
+  // =====================================================================
+  //  FLOW
+  // =====================================================================
+  beginWorld() {
+    this.state = 'play';
+    this.drawProgress();
+    this.banner(this.wd.name, this.wd.sub);
+    if (this.worldIndex === 0) this.time.delayedCall(1300, () => this.speak('Hello, daughter of Zeus! Climb to Olympus!'));
+  }
+
+  enterSeg(i) {
+    this.segIndex = i;
+    const seg = this.segs[i];
+    this.checkpoint = { x: seg.x0 + 70, y: GROUND - 60 };
+    if (seg.type === 'cmd') { seg.rounds = this.pickRounds(); seg.round = 0; this.time.delayedCall(700, () => this.cmdRound(seg)); }
+    if (seg.type === 'bridge') this.time.delayedCall(300, () => this.bridgeAsk(seg));
+    if (seg.type === 'route') {
+      if (!seg.target) { seg.target = pick(seg.opts.filter(v => v !== this.lastRoute)); this.lastRoute = seg.target; }
+      this.time.delayedCall(300, () => this.speak(...OLYMPUS.commands[seg.target], seg.fails >= NEED_HE_AFTER));
+    }
+    if (seg.type === 'boss') this.bossStart(seg);
+  }
+
+  segDone(seg, x, y) {
+    if (seg.done) return;
+    seg.done = true;
+    sfx.good();
+    this.floatText(seg.fails ? 'Good!' : 'Perfect!', x ?? this.player.x, (y ?? this.player.y) - 80, '#ffe066', 38);
+    this.addCoins(seg.fails ? 3 : 6, x ?? this.player.x, y ?? this.player.y - 40);
+    sayZ('Well done!'); this.lastSaid = null;
+    this.bubble.setVisible(false);
+    if (seg.gate) this.openGate(seg.gate);
+    this.drawProgress();
+  }
+
+  // something went wrong: back to the start of this challenge, try again (gentle: no hearts)
+  fail(seg, msg) {
+    if (this.busy) return;
+    this.busy = true; seg.fails++;
+    sfx.hit(); this.cameras.main.shake(150, 0.006);
+    this.floatText(msg, this.player.x, this.player.y - 110, '#ff9b9b', 30);
+    this.heroImg.setTintFill(0xff6060); this.time.delayedCall(140, () => this.heroImg.clearTint());
+    this.clearThreats();
+    this.time.delayedCall(650, () => {
+      this.player.setPosition(this.checkpoint.x, this.checkpoint.y).setVelocity(0, 0);
+      this.setDuck(false); this.climbing = false; this.player.body.allowGravity = true;
+      this.busy = false;
+      if (seg.type === 'cmd' && !seg.done) this.time.delayedCall(700, () => this.cmdRound(seg));
+      if (seg.type === 'bridge' && !seg.done) this.resetStones(seg);
+      if (seg.type === 'boss' && !seg.done) this.time.delayedCall(700, () => this.bossRound(seg));
+      if (seg.type === 'route' && !seg.done) this.resetRoute(seg);
+    });
+  }
+
+  clearThreats() { this.threats.forEach(t => t.obj.destroy()); this.threats = []; this.watching = null; if (this.eye) { this.eye.destroy(); this.eye = null; } if (this.eyeTimer) { this.eyeTimer.remove(); this.eyeTimer = null; } if (this.watcher) { this.watcher.destroy(); this.watcher = null; } }
+
+  // =====================================================================
+  //  ZEUS'S COMMANDS
+  // =====================================================================
+  // next command: never the same twice, and not the same one that followed it last time (so no pattern to learn)
+  nextCmd(prev, pool) {
+    this.after = this.after || {};
+    let opts = pool.filter(c => c !== prev && c !== this.after[prev]);
+    if (!opts.length) opts = pool.filter(c => c !== prev);
+    const c = pick(opts);
+    if (prev) this.after[prev] = c;
+    return c;
+  }
+
+  pickRounds() {
+    const n = this.wd.rounds, list = [];
+    let prev = this.lastCmd;
+    for (let i = 0; i < n; i++) {
+      const c = this.nextCmd(prev, this.wd.cmds.filter(c => c !== 'run' || i === n - 1));
+      list.push(c); prev = c;
+    }
+    this.lastCmd = prev;
+    return list;
+  }
+
+  cmdRound(seg, boss) {
+    if (seg.done || this.busy) return;
+    const cmd = boss ? seg.cmd : seg.rounds[seg.round];
+    const [text, he] = OLYMPUS.commands[cmd];
+    this.speak(text, he, seg.fails >= NEED_HE_AFTER);
+    const cam = this.cameras.main, right = () => cam.worldView.right + 30;
+    const token = seg.token = (seg.token || 0) + 1;
+    const later = (ms, fn) => this.time.delayedCall(ms, () => { if (seg.token === token && !this.busy) fn(); });
+    const pass = () => { if (seg.token !== token) return; seg.token++; this.cmdPassed(seg, boss); };
+    if (cmd === 'jump') later(500, () => this.threat('boulder', boss ? seg.typhon.x - 120 : right(), GROUND - 36, -540, 36, pass));
+    if (cmd === 'duck') later(500, () => this.threat('harpy', boss ? seg.typhon.x - 120 : right(), GROUND - 108, -620, 30, pass));
+    if (cmd === 'dontjump') later(500, () => this.threat('harpy', boss ? seg.typhon.x - 120 : right(), GROUND - 190, -620, 26, pass));
+    if (cmd === 'stop') later(900, () => this.watch(seg, pass, boss));
+    if (cmd === 'run') later(300, () => {
+      this.openGate(seg.gate);
+      const b = this.threat('bigboulder', this.player.x - 560, GROUND - 70, 250, 70, null);
+      b.goal = seg.gate.x + 10; b.onGoal = pass;
+    });
+  }
+
+  cmdPassed(seg, boss) {
+    sfx.good(); this.floatText('Great!', this.player.x, this.player.y - 120);
+    this.addCoins(2, this.player.x, this.player.y - 60);
+    if (boss) return this.bossHit(seg);
+    seg.round++;
+    if (seg.round >= seg.rounds.length) this.segDone(seg);
+    else this.time.delayedCall(900, () => this.cmdRound(seg));
+  }
+
+  // a moving danger: passes the hero = success, touches the hero = try again
+  threat(kind, x, y, vx, r, onPass) {
+    let obj;
+    if (kind === 'boulder' || kind === 'bigboulder') obj = this.art('boulder', x, y, r * 2.2, '🪨');
+    else obj = this.art('harpy', x, y, 90, '🦅');
+    if (kind === 'harpy' && !this.has('art_harpy')) obj.setFlipX(false);
+    obj.setDepth(9);
+    const t = { kind, obj, vx, r, onPass, passed: false };
+    this.threats.push(t);
+    return t;
+  }
+
+  updateThreats(dt) {
+    const pb = this.player.body;
+    const box = new Phaser.Geom.Rectangle(pb.left + 6, pb.top + 4, pb.width - 12, pb.height - 6);
+    for (const t of [...this.threats]) {
+      t.obj.x += t.vx * dt;
+      if (t.kind.includes('boulder')) t.obj.angle += t.vx * dt * 0.8;
+      else t.obj.y += Math.sin(this.time.now / 90) * 0.8;
+      const hitArea = t.kind === 'harpy' ? new Phaser.Geom.Rectangle(t.obj.x - 34, t.obj.y - 16, 68, 32) : null;
+      const hit = hitArea ? Phaser.Geom.Intersects.RectangleToRectangle(hitArea, box) : Phaser.Geom.Intersects.CircleToRectangle(new Phaser.Geom.Circle(t.obj.x, t.obj.y, t.r * 0.8), box);
+      if (hit) { const seg = this.segs[this.segIndex]; this.fail(seg, t.kind === 'harpy' ? 'Ouch! Listen!' : 'Oops!'); return; }
+      if (t.goal && this.player.x > t.goal) { this.threats = this.threats.filter(x => x !== t); this.tweens.add({ targets: t.obj, alpha: 0, duration: 400, onComplete: () => t.obj.destroy() }); t.onGoal(); continue; }
+      if (t.onPass && !t.passed && t.vx < 0 && t.obj.x < this.player.x - 90) { t.passed = true; t.onPass(); }
+      if (t.obj.x < this.cameras.main.worldView.left - 200 || t.obj.x > this.worldW + 200) { t.obj.destroy(); this.threats = this.threats.filter(x => x !== t); }
+    }
+  }
+
+  // "Stop!": the Cyclops (or Typhon) watches; any movement and he sees her
+  watch(seg, pass, boss) {
+    const x = boss ? seg.typhon.x : this.player.x + 430;
+    const c = boss ? null : this.art('cyclops', x, GROUND + 90, 200, '👁️').setDepth(3);
+    if (c) this.tweens.add({ targets: c, y: GROUND - 100, duration: 400, ease: 'Back.out' });
+    this.watcher = c;
+    const eye = null;   // the Cyclops himself shows he is watching
+    if (c && c.setTint) this.time.delayedCall(400, () => { if (c.active) this.tweens.add({ targets: c, alpha: { from: 1, to: 0.75 }, duration: 300, yoyo: true, repeat: 3 }); });
+    this.watching = { seg, until: this.time.now + 2600 };
+    this.eyeTimer = this.time.delayedCall(2600, () => {
+      this.watching = null; this.eyeTimer = null;
+      if (c) this.tweens.add({ targets: c, y: GROUND + 120, duration: 400, onComplete: () => { c.destroy(); if (this.watcher === c) this.watcher = null; } });
+      pass();
+    });
+    this.eye = eye;
+  }
+
+  // =====================================================================
+  //  WORD BRIDGE
+  // =====================================================================
+  // the sentence is shown in Hebrew only; the English is spoken as help after two falls, and when she finishes
+  bridgeAsk(seg) {
+    this.listen(seg.sentence, seg.he, seg.fails >= NEED_HE_AFTER);
+  }
+  showLine(text) {
+    this.bubbleText.setText(text); this.bubbleHe.setVisible(false);
+    const w = this.bubbleText.width + 140, x0 = -w / 2;
+    this.zface.x = x0 + 46; this.bubbleText.x = x0 + 98;
+    this.bubbleBg.clear().fillStyle(0x2b1a0a).fillRoundedRect(x0, -32, w, 64, 32).fillStyle(0xffffff).fillRoundedRect(x0, -38, w, 64, 32).lineStyle(5, 0x2b1a0a).strokeRoundedRect(x0, -38, w, 64, 32);
+    this.bubble.setVisible(true).setScale(0.6); this.tweens.add({ targets: this.bubble, scale: 1, duration: 240, ease: 'Back.out' });
+  }
+
+  onStone(st) {
+    const seg = st.seg;
+    if (!this.player.body.touching.down || st.state !== 'idle' || seg.done) return;
+    if (st.word === seg.words[seg.next]) {
+      st.state = 'gold'; st.setTint(0xffd43b); this.sparks.explode(10, st.x, st.y);
+      sayZ(st.word); seg.next++;
+      this.floatText(st.word, st.x, st.y - 50, '#ffe066', 28);
+      if (seg.next >= seg.words.length) this.time.delayedCall(600, () => { this.speak(seg.sentence); this.segDone(seg, st.x, st.y); });
+    } else {
+      st.state = 'crumble'; sfx.crumble();
+      this.floatText('Not "' + st.word + '"!', st.x, st.y - 50, '#ff9b9b', 26);
+      this.tweens.add({ targets: [st, st.label], x: '+=4', duration: 50, yoyo: true, repeat: 3, onComplete: () => {
+        st.disableBody(false, false);
+        this.dust.explode(14, st.x, st.y);
+        this.tweens.add({ targets: [st, st.label], y: '+=400', alpha: 0, duration: 700, ease: 'Quad.in' });
+      } });
+    }
+  }
+
+  resetStones(seg) {
+    seg.stones.forEach(st => {
+      if (st.state === 'gold') return;
+      this.tweens.killTweensOf([st, st.label]);
+      st.state = 'idle'; st.setPosition(st.home.x, st.home.y).setAlpha(1); st.label.setPosition(st.home.x, st.home.y - 3).setAlpha(1);
+      st.enableBody(true, st.home.x, st.home.y, true, true); st.refreshBody();
+    });
+    // more help after mistakes: after two falls Zeus says it in English; after three the next stone blinks
+    this.bridgeAsk(seg);
+    if (seg.fails >= NEED_HE_AFTER + 1) { const st = seg.stones.find(s => s.state === 'idle' && s.word === seg.words[seg.next]); if (st) this.tweens.add({ targets: st, alpha: 0.4, duration: 300, yoyo: true, repeat: 5 }); }
+  }
+
+  // =====================================================================
+  //  OPPOSITES MAGIC
+  // =====================================================================
+  oppStart(seg) {
+    seg.started = true;
+    const o = OLYMPUS.opposites[seg.sub];
+    // the task is chosen once; after a mistake the SAME instruction is repeated
+    if (!seg.target) {
+      this.lastOpp = this.lastOpp || {};
+      seg.target = this.lastOpp[seg.sub] === 'a' ? 'b' : this.lastOpp[seg.sub] === 'b' ? 'a' : pick(['a', 'b']);
+      this.lastOpp[seg.sub] = seg.target;
+      seg.order = shuffle(['a', 'b']);
+    }
+    this.spellBtns.forEach((b, k) => this.setWord(b, o[seg.order[k]]));
+    this.spell.setVisible(true).setScale(0.6); this.tweens.add({ targets: this.spell, scale: 1, duration: 250, ease: 'Back.out' });
+    this.listen(o.say[seg.target], o.he[seg.target], seg.fails >= NEED_HE_AFTER);
+  }
+
+  setWord(btn, word) {
+    btn.label.setText(word).setFontSize(36).setStroke('#2b1a0a', 6);
+    btn.word = word;
+  }
+
+  setIcon(btn, word) {
+    const [icon, size] = OPP_ICON[word];
+    btn.label.setText(icon).setFontSize(size).setStroke('#2b1a0a', 0);
+    btn.word = word;
+  }
+
+  cast(k) {
+    const seg = this.segs[this.segIndex];
+    if (!seg || seg.done || !this.spell.visible || this.casting) return;
+    const choice = seg.boss ? (k === seg.order.indexOf('b') ? 'b' : 'a') : seg.order[k];
+    this.casting = true; sfx.magic();
+    // a bolt from the sky onto the target
+    const tx = seg.boss ? seg.typhon.x : seg.ox, ty = seg.boss ? seg.typhon.y : GROUND - 120;
+    this.bolt(tx, ty);
+    const ok = choice === seg.target;
+    this.floatText(this.spellBtns[k].word + '!', tx, ty - 140, ok ? '#ffe066' : '#ff9b9b', 40);
+    if (seg.boss) return this.bossCast(seg, ok);
+    this.oppEffect(seg, choice, ok);
+  }
+
+  oppEffect(seg, word, ok) {
+    const o = seg.obj, type = seg.sub, a = word === 'a';
+    const done = () => {
+      this.casting = false;
+      if (ok) {
+        this.spell.setVisible(false);
+        seg.wall.body.enable = false; seg.wall.destroy();
+        if (type === 'river') {
+          const p = this.block(seg.ox, GROUND + 20, 330, 40, a ? 0x9a7a4a : 0xdff4ff); p.setDepth(6);
+          if (seg.riverImg && !a) p.setAlpha(0);                     // the ice picture itself is the path
+          if (a) {
+            // hot: the water boils away and leaves a dry riverbed of earth, level with the banks
+            p.setAlpha(0); p.body.enable = false;
+            this.ground(seg.ox - 160, seg.ox + 160, GROUND).setDepth(3);
+            if (seg.riverImg) this.tweens.add({ targets: seg.riverImg, alpha: 0, scaleY: seg.riverImg.scaleY * 0.3, y: GROUND + 110, duration: 1100 });
+            for (let k = 0; k < 6; k++) this.time.delayedCall(k * 150, () => this.dust.explode(4, seg.ox + Phaser.Math.Between(-140, 140), GROUND + 10));
+          }
+        }
+        if (type !== 'river') this.tweens.add({ targets: [o, seg.door].filter(Boolean), alpha: 0, duration: 500, delay: 300 });
+        this.segDone(seg, seg.ox, GROUND - 160);
+      } else {
+        sfx.wrong(); seg.fails++;
+        this.floatText('Oops! Listen again.', seg.ox, GROUND - 280, '#ff9b9b', 30);
+        sayZ('Oops! Listen again.');
+        this.time.delayedCall(1300, () => { this.resetOpp(seg); this.oppStart(seg); });
+      }
+    };
+    // show what the word means, right or wrong
+    if (type === 'rock') this.tweens.add({ targets: o, scale: o.scale * (a ? 1.6 : 0.4), duration: 500, ease: 'Back.out', onComplete: done });
+    if (type === 'door') this.tweens.add({ targets: seg.door, scaleX: seg.door.fullX * (a ? 0.08 : 1), duration: 400, ease: 'Quad.out', onComplete: () => { if (!a) this.cameras.main.shake(120, 0.005); done(); } });
+    if (type === 'river') {
+      o.setFillStyle(a ? 0xe8553a : 0xdff4ff, 0.9);
+      const art = a ? 'art_river_hot' : 'art_river_ice';
+      if (seg.riverImg && this.has(art)) seg.riverImg.setTexture(art).setDisplaySize(340, 150);
+      if (a) for (let k = 0; k < 8; k++) this.dust.explode(3, seg.ox + Phaser.Math.Between(-150, 150), GROUND);
+      this.time.delayedCall(700, done);
+    }
+    if (type === 'wind') this.tweens.add({ targets: o, angle: a ? 720 : 30, scale: o.scale * (a ? 1.25 : 0.8), duration: a ? 600 : 1200, onComplete: done });
+    if (type === 'cloud') this.tweens.add({ targets: o, y: o.y + (a ? -220 : 120), duration: 700, ease: 'Sine.inOut', onComplete: done });
+    if (type === 'monster') {
+      const mood = this.add.text(seg.ox, GROUND - 250, a ? '😄' : '😢', { fontSize: 70 }).setOrigin(0.5).setDepth(12);
+      if (this.has('art_monster_' + (a ? 'happy' : 'sad')) && o.setTexture) o.setTexture('art_monster_' + (a ? 'happy' : 'sad'));
+      this.tweens.add({ targets: o, y: o.y + (a ? -30 : 15), duration: 200, yoyo: true, repeat: a ? 3 : 1 });
+      this.tweens.add({ targets: mood, alpha: 0, delay: 1000, duration: 300, onComplete: () => mood.destroy() });
+      this.time.delayedCall(900, done);
+    }
+  }
+
+  resetOpp(seg) {
+    const o = seg.obj;
+    if (seg.sub === 'rock') o.setScale(o.base);
+    if (seg.sub === 'door') seg.door.scaleX = seg.door.fullX * 0.55;
+    if (seg.sub === 'river') { o.setFillStyle(0x2e86de, 0.85); if (seg.riverImg) seg.riverImg.setTexture('art_river_water').setDisplaySize(340, 150); }
+    if (seg.sub === 'wind') { o.setAngle(0); o.setScale(o.base); }
+    if (seg.sub === 'cloud') o.y = o.baseY;
+    if (seg.sub === 'monster' && this.has('art_monster') && o.setTexture) o.setTexture('art_monster');
+  }
+
+  bolt(x, y) {
+    sfx.thunder();
+    const g = this.add.graphics().setDepth(40);
+    const top = this.cameras.main.worldView.top - 20;
+    let px = x + Phaser.Math.Between(-40, 40), py = top;
+    g.lineStyle(10, 0xfff3a0, 1).beginPath().moveTo(px, py);
+    while (py < y) { px = x + Phaser.Math.Between(-35, 35); py += 60; g.lineTo(px, Math.min(py, y)); }
+    g.strokePath();
+    this.cameras.main.flash(120, 255, 255, 220);
+    this.tweens.add({ targets: g, alpha: 0, duration: 350, onComplete: () => g.destroy() });
+    this.sparks.explode(24, x, y);
+  }
+
+  // =====================================================================
+  //  ROUTES: climb / swim / fly. Only the way Zeus said works.
+  // =====================================================================
+  setSwimBody(on) {
+    if (on === this.swimBody) return;
+    this.swimBody = on;
+    const b = this.player.body;
+    // a smaller body while swimming (to fit through the tunnel); the bottom stays where it was
+    if (on) { b.setSize(40, 40); this.player.y += 24; } else { b.setSize(40, 88); this.player.y -= 24; }
+  }
+
+  updateRoute(seg, k) {
+    const b = this.player.body, up = k.up.isDown || k.w.isDown, down = k.down.isDown || k.s.isDown;
+    // --- swimming: she floats at the surface; DOWN dives, UP swims up / jumps out ---
+    // in the water = the middle of her body is below the surface (not the feet: that made her bounce in and out)
+    const inWater = !this.climbing && this.player.x > seg.water.x && this.player.x < seg.water.right && this.player.y > GROUND - 4;
+    if (inWater && !this.swimming) {
+      this.swimming = true; sfx.splash(); this.setSwimBody(true);
+      if (!seg.diveTip) { seg.diveTip = true; this.floatText('↓ dive    ↑ up', this.player.x, GROUND - 90, '#ffffff', 26); }
+    }
+    if (!inWater && this.swimming) { this.swimming = false; this.setSwimBody(false); b.setGravityY(1600); }
+    if (this.swimming) {
+      b.setGravityY(0);
+      const surface = GROUND + 18;
+      if (down) b.velocity.y = 170;
+      else if (up) b.velocity.y = this.player.y < surface + 30 ? -700 : -230;
+      else b.velocity.y = Phaser.Math.Clamp((surface - this.player.y) * 3, -160, 160);
+      if (seg.target !== 'swim' && Phaser.Geom.Rectangle.Contains(seg.under, this.player.x, this.player.y)) return this.fail(seg, 'A whirlpool! Listen!');
+    }
+    // --- climbing the vine ---
+    const inZone = Phaser.Geom.Rectangle.Contains(seg.zone, this.player.x, this.player.y);
+    if (!this.climbing && inZone && up) { this.climbing = true; this.swimming = false; this.setSwimBody(false); b.allowGravity = false; b.setGravityY(1600); }
+    const side = k.left.isDown || k.a.isDown || k.right.isDown || k.d.isDown;
+    if (this.climbing && side && !up) {   // let go of the vine
+      this.climbing = false; b.allowGravity = true;
+      this.player.setVelocity((k.right.isDown || k.d.isDown ? 1 : -1) * 160, -120);
+    }
+    if (this.climbing) {
+      this.player.setVelocity(0, up ? -210 : down ? 210 : 0);
+      this.player.x = seg.wx - 104;
+      if (seg.target !== 'climb' && this.player.y < GROUND - 150) {
+        seg.vines.forEach(v => this.tweens.add({ targets: v, y: v.y + 400, alpha: 0, duration: 600 }));
+        return this.fail(seg, 'The vine broke! Listen!');
+      }
+      if (b.top < GROUND - 320) { this.climbing = false; b.allowGravity = true; this.player.setVelocity(190, -330); }
+      if (!inZone) { this.climbing = false; b.allowGravity = true; }
+    }
+    // --- the Pegasus: standing next to it shows "↑ ride"; UP then gets on (running past does nothing) ---
+    const besidePeg = seg.pegasus && !this.riding && Math.abs(this.player.x - seg.pegasus.x) < 70 && Math.abs(b.bottom - GROUND) < 10 && Math.abs(b.velocity.x) < 60;
+    if (seg.pegasus && !this.riding) {
+      if (!seg.rideTip) seg.rideTip = this.add.text(seg.pegasus.x, GROUND - 190, '↑  ride', { fontFamily: 'Nunito', fontSize: 28, fontStyle: '900', color: '#ffffff', stroke: '#2b1a0a', strokeThickness: 6, backgroundColor: '#7b5cd6', padding: { x: 12, y: 4 } }).setOrigin(0.5).setDepth(30);
+      seg.rideTip.setVisible(besidePeg).setPosition(seg.pegasus.x, seg.pegasus.y - 120);
+    } else if (seg.rideTip) seg.rideTip.setVisible(false);
+    if (besidePeg && up) {
+      if (seg.target === 'fly') this.ride(seg);
+      else {
+        this.tweens.killTweensOf(seg.pegasus);
+        this.tweens.add({ targets: seg.pegasus, angle: -25, y: seg.pegasus.y - 40, duration: 180, yoyo: true });
+        return this.fail(seg, 'The Pegasus says no! Listen!');
+      }
+    }
+    if (!seg.done && this.player.x > seg.p1 + 30 && b.bottom <= GROUND + 2 && !this.swimming) this.segDone(seg, this.player.x, this.player.y);
+  }
+
+  ride(seg) {
+    this.riding = true; sayZ('Ride the Pegasus!');
+    this.tweens.killTweensOf(seg.pegasus);
+    const b = this.player.body; b.allowGravity = false; this.player.setVelocity(0, 0);
+    const from = { x: seg.pegasus.x, y: seg.pegasus.y }, ride = { t: 0 };
+    this.tweens.add({ targets: ride, t: 1, duration: 2600, ease: 'Sine.inOut',
+      onUpdate: () => {
+        const x = Phaser.Math.Linear(from.x, seg.p1 + 120, ride.t), y = Phaser.Math.Linear(from.y, GROUND - 70, ride.t) - Math.sin(ride.t * Math.PI) * 330;
+        seg.pegasus.setPosition(x, y); this.player.setPosition(x, y - 70);
+      },
+      onComplete: () => {
+        this.riding = false; b.allowGravity = true;
+        this.tweens.add({ targets: seg.pegasus, y: '-=420', alpha: 0, duration: 1200 });
+      } });
+  }
+
+  resetRoute(seg) {
+    this.climbing = false; this.swimming = false; this.setSwimBody(false);
+    this.player.body.allowGravity = true; this.player.body.setGravityY(1600);
+    seg.vines.forEach(v => { this.tweens.killTweensOf(v); v.setAlpha(1).setY(v.homeY); });
+    if (seg.pegasus) {
+      this.tweens.killTweensOf(seg.pegasus);
+      seg.pegasus.setPosition(seg.pegHome.x, seg.pegHome.y).setAngle(0).setAlpha(1);
+      this.tweens.add({ targets: seg.pegasus, y: GROUND - 82, duration: 700, yoyo: true, repeat: -1, ease: 'Sine.inOut' });
+    }
+    this.speak(...OLYMPUS.commands[seg.target], seg.fails >= NEED_HE_AFTER);
+  }
+
+  // =====================================================================
+  //  BOSS: Typhon at the gate of Olympus
+  // =====================================================================
+  bossStart(seg) {
+    seg.boss = true; seg.hits = 0; seg.need = 6;
+    this.cameras.main.shake(500, 0.01); sfx.roar();
+    this.speak('Here comes Typhon!');
+    this.tweens.add({ targets: [seg.typhon, seg.face].filter(Boolean), y: '-=20', duration: 600, yoyo: true, repeat: -1, ease: 'Sine.inOut' });
+    this.time.delayedCall(2000, () => this.bossRound(seg));
+  }
+
+  bossRound(seg) {
+    if (seg.done || this.busy) return;
+    if (seg.hits >= seg.need - 1) {
+      // the finale: shrink him with Zeus's magic
+      seg.target = 'b'; seg.order = shuffle(['a', 'b']);
+      this.spellBtns.forEach((b, k) => this.setWord(b, seg.order[k] === 'a' ? 'big' : 'small'));
+      this.spell.setVisible(true);
+      this.listen('Make Typhon small!', 'תעשי את טייפון קטן', seg.fails >= NEED_HE_AFTER);
+      return;
+    }
+    // a new command only after a success; after a mistake the same one is repeated
+    if (!seg.cmd || seg.fresh) { seg.cmd = this.nextCmd(seg.cmd, ['jump', 'duck', 'dontjump', 'stop']); seg.fresh = false; }
+    this.cmdRound(seg, true);
+  }
+
+  bossHit(seg) {
+    seg.hits++; seg.fresh = true;
+    this.bolt(seg.typhon.x, seg.typhon.y);
+    seg.size *= 0.88;
+    this.tweens.add({ targets: [seg.typhon, seg.face].filter(Boolean), scale: `*=${0.88}`, duration: 300 });
+    if (seg.typhon.setTintFill) { seg.typhon.setTintFill(0xffffff); this.time.delayedCall(100, () => seg.typhon.clearTint()); }
+    this.time.delayedCall(1200, () => this.bossRound(seg));
+  }
+
+  bossCast(seg, ok) {
+    this.time.delayedCall(500, () => {
+      this.casting = false;
+      if (!ok) {
+        sfx.wrong(); seg.fails++;
+        this.tweens.add({ targets: [seg.typhon, seg.face].filter(Boolean), scale: '*=1.2', duration: 300, yoyo: true });
+        sayZ('Oops! Listen again.');
+        this.time.delayedCall(1300, () => this.bossRound(seg));
+        return;
+      }
+      this.spell.setVisible(false);
+      this.tweens.killTweensOf([seg.typhon, seg.face].filter(Boolean));
+      this.tweens.add({ targets: [seg.typhon, seg.face].filter(Boolean), scale: 0.05, angle: 720, y: '-=300', alpha: 0, duration: 1600, ease: 'Quad.in' });
+      this.time.delayedCall(1700, () => { this.segDone(seg, seg.typhon.x, GROUND - 200); this.victory(); });
+    });
+  }
+
+  // =====================================================================
+  //  END OF A WORLD
+  // =====================================================================
+  celebrate(big) {
+    const conf = this.add.particles(0, 0, 'dot', {
+      x: { min: 0, max: W }, y: -20, lifespan: 3200, speedY: { min: 180, max: 320 }, speedX: { min: -80, max: 80 },
+      scale: { min: 0.6, max: 1.2 }, quantity: big ? 6 : 4, frequency: 40,
+      tint: [0xe84545, 0x3b82f6, 0x3fbf6f, 0xffd43b, 0xff7eb6, 0x9b5de5, 0xff8a1f],
+    }).setScrollFactor(0).setDepth(150);
+    this.time.delayedCall(big ? 2600 : 1600, () => conf.stop());
+    this.time.delayedCall(5000, () => conf.destroy());
+    for (let k = 0; k < (big ? 8 : 4); k++) this.time.delayedCall(200 + k * 320, () => { this.sparks.explode(30, this.player.x + Phaser.Math.Between(-400, 400), this.player.y - Phaser.Math.Between(150, 350)); tone(300 + k * 60, 1200, .25, 'triangle', .05); });
+  }
+
+  worldComplete() {
+    this.state = 'done'; sfx.win(); this.celebrate(false);
+    Save.markDone('olympus', this.worldIndex + 1);
+    this.addCoins(10, this.player.x, this.player.y);
+    this.banner('World complete!', 'Up the mountain…');
+    this.speak('Up the mountain!');
+    // she walks up the path and away
+    this.player.setVelocity(0, 0); this.player.body.allowGravity = false;
+    this.tweens.add({ targets: this.player, x: this.exitX + 200, y: GROUND - 160, duration: 1600 });
+    this.time.delayedCall(3200, () => this.cameras.main.fadeOut(400));
+    this.time.delayedCall(3700, () => this.scene.restart({ world: this.worldIndex + 1, coins: this.coins, title: false }));
+  }
+
+  victory() {
+    this.state = 'done'; sfx.win(); this.celebrate(true);
+    Save.markDone('olympus', WORLDS.length);
+    const view = this.cameras.main.worldView;
+    const zx = Phaser.Math.Clamp(this.player.x + 230, view.left + 160, view.right - 160);
+    const z = this.art('zeus', zx, GROUND - 400, 220, '⚡').setDepth(20).setAlpha(0);
+    if (z.setFlipX && zx > this.player.x) z.setFlipX(true);   // turn toward her
+    this.tweens.add({ targets: z, alpha: 1, y: GROUND - 220, duration: 900, ease: 'Back.out' });
+    this.time.delayedCall(800, () => this.speak('Welcome to Olympus, my daughter!'));
+    if (this.has('art_victory')) this.time.delayedCall(2200, () => {
+      const v = this.add.image(W / 2, H / 2, 'art_victory').setScrollFactor(0).setDepth(140).setAlpha(0);
+      v.setScale(Math.max(W / v.width, H / v.height));
+      this.tweens.add({ targets: v, alpha: 1, duration: 900 });
+      // her pet joins the picture: on the step beside her, or flying next to her
+      Gear.addToPicture(this, v, { spot: [1350, 902], fly: [1390, 630], size: 175, lookX: 1075 });
+    });
+    this.time.delayedCall(this.has('art_victory') ? 6500 : 4000, () => this.overlay('Welcome to Olympus!', `You climbed the whole mountain\nand beat Typhon, daughter of Zeus!\n\nDrachmas: ${this.coins}`, 'Back to camp', goToCamp));
+  }
+
+  // =====================================================================
+  //  INPUT HELPERS
+  // =====================================================================
+  setDuck(on) {
+    if (on === this.ducking) return;
+    this.ducking = on;
+    const b = this.player.body;
+    if (on) { b.setSize(40, 44); this.player.y += 22; }
+    else { b.setSize(40, 88); this.player.y -= 22; }
+  }
+
+  // =====================================================================
+  //  UPDATE
+  // =====================================================================
+  update(time, deltaMs) {
+    this.camTick();
+    const dt = Math.min(deltaMs, 50) / 1000, k = this.keys, b = this.player.body;
+    const onGround = b.blocked.down || b.touching.down;
+    const canMove = this.state === 'play' && !this.busy && !this.riding;
+
+    // parallax background
+    const cam = this.cameras.main;
+    if (this.farHills) { this.farHills.tilePositionX = cam.scrollX * 0.15; this.nearHills.tilePositionX = cam.scrollX * 0.35; }
+
+    // --- movement ---
+    let move = 0;
+    if (canMove && !this.climbing) {
+      if (k.left.isDown || k.a.isDown) move -= 1;
+      if (k.right.isDown || k.d.isDown) move += 1;
+      const wantDuck = (k.down.isDown || k.s.isDown) && onGround && !this.swimming;
+      this.setDuck(wantDuck);
+      if ((Phaser.Input.Keyboard.JustDown(k.up) || Phaser.Input.Keyboard.JustDown(k.w) || Phaser.Input.Keyboard.JustDown(k.space)) && onGround && !this.ducking) {
+        this.player.setVelocityY(-760); sfx.jump(); this.dust.explode(6, this.player.x, b.bottom);
+      }
+      const speed = this.ducking ? 90 : 290;
+      this.player.setVelocityX(Phaser.Math.Linear(b.velocity.x, move * speed, onGround ? 0.3 : 0.12));
+      if (move) this.facing = move;
+      if (move || !onGround) this.stillSince = 0; else if (!this.stillSince) this.stillSince = this.time.now;
+      if (Phaser.Input.Keyboard.JustDown(k.z)) this.cast(0);
+      if (Phaser.Input.Keyboard.JustDown(k.x)) this.cast(1);
+      if (Phaser.Input.Keyboard.JustDown(k.r)) this.repeat();
+    } else if (!this.riding && !this.climbing) this.player.setVelocityX(0);
+
+    // --- hero picture ---
+    const h = this.heroImg;
+    h.setPosition(this.player.x, b.bottom + 2);
+    if (this.animated && h.texture.key === 'hero_walk') {
+      if (this.climbing) { if (b.velocity.y) { if (h.anims.currentAnim?.key !== 'h_up' || !h.anims.isPlaying) h.play('h_up'); } else { h.anims.stop(); h.setFrame(12); } }
+      else if (!onGround || this.riding) { h.anims.stop(); h.setFrame(this.facing < 0 ? 5 : 9); }
+      else if (move) { const a = this.facing < 0 ? 'h_left' : 'h_right'; if (h.anims.currentAnim?.key !== a || !h.anims.isPlaying) h.play(a); }
+      else { h.anims.stop(); h.setFrame(this.facing < 0 ? 4 : 8); }
+    } else h.setFlipX(this.facing < 0);
+    const s = this.heroScale;
+    // how tall she is standing on screen; crouching is 80% of that, jumping 95%
+    const standH = (this.animated ? this.drawnHeight('hero_walk', 8) : this.heroImg.height) * s;
+    const airborne = !onGround && !this.climbing && !this.riding && !this.swimming;
+    // special poses (Nano Banana pictures, same height as when standing / lower when ducking)
+    const pose = this.swimming && this.has('hero_swim') ? 'hero_swim'
+               : this.ducking && this.has('hero_duck') ? 'hero_duck' : airborne && this.has('hero_jump') ? 'hero_jump' : null;
+    if (pose) {
+      if (h.anims) h.anims.stop();
+      h.setTexture(pose).setFlipX(this.facing < 0);
+      h.setScale((pose === 'hero_duck' ? standH * 0.8 : pose === 'hero_swim' ? standH * 0.55 : standH * 0.95) / this.drawnHeight(pose, '__BASE'));
+      if (pose === 'hero_swim') h.y = b.bottom + 22;
+      h.angle = 0;
+    } else {
+      if (h.texture.key !== (this.animated ? 'hero_walk' : 'hero')) { h.setTexture(this.animated ? 'hero_walk' : 'hero', this.animated ? (this.facing < 0 ? 4 : 8) : undefined); }
+      if (this.animated) h.setFlipX(false);
+      if (this.swimming) { h.setScale(s); h.y = b.bottom + 40; h.angle = 0; }
+      else if (this.ducking) { h.setScale(s * 0.95, s * 0.72); h.angle = this.facing * 22; }   // crouch-lean until there's a ducking picture
+      else if (airborne) { h.setScale(s * 0.94, s * 1.06); h.angle = this.facing * 6; }
+      else { h.setScale(s); h.angle = 0; }
+    }
+
+    if (this.state !== 'play') return;
+
+    // --- which challenge is she in ---
+    const idx = this.segs.findIndex(sg => this.player.x >= sg.x0 && this.player.x < sg.x1);
+    if (idx > this.segIndex) this.enterSeg(idx);
+    const seg = this.segs[this.segIndex];
+    if (seg) {
+      if (seg.type === 'opp' && !seg.done && !seg.started && this.player.x > seg.ox - 430) this.oppStart(seg);
+      if (seg.type === 'route') this.updateRoute(seg, k);
+      else if (this.swimming) { this.swimming = false; this.setSwimBody(false); b.setGravityY(1600); }
+    }
+    // "Stop!": moving while the eye is open
+    if (this.watching && !this.busy && (Math.abs(b.velocity.x) > 30 || !onGround)) {
+      const sg = this.watching.seg; this.watching = null;
+      if (this.eye) { this.eye.destroy(); this.eye = null; }
+      this.fail(sg, 'He saw you! Stop!');
+    }
+    this.updateThreats(dt);
+
+    // fell into a gap
+    if (this.player.y > H + 80 && !this.busy) {
+      if (seg && (seg.type === 'bridge' || seg.type === 'route')) this.fail(seg, 'Splash! Try again!');
+      else { this.player.setPosition(this.checkpoint.x, this.checkpoint.y).setVelocity(0, 0); }
+    }
+    // the way up
+    if (this.exitX && this.player.x > this.exitX + 40) this.worldComplete();
+  }
+
+  // background / HUD / world each on their own camera, sharp at any screen size (see common.js HD)
+  camTick() {
+    const main = this.cameras.main;
+    const walk = (list, top) => {
+      for (const o of list) {
+        if (o.type === 'Text' && !o._hdText) { o._hdText = true; o.setResolution(HD); }
+        if (top && !o._hdCam) {
+          o._hdCam = true;
+          if (o.isBg) { main.ignore(o); this.uiCam.ignore(o); }
+          else if (o.scrollFactorX === 0) { main.ignore(o); this.bgCam.ignore(o); }
+          else { this.uiCam.ignore(o); this.bgCam.ignore(o); }
+        }
+        if (o.list) walk(o.list, false);
+      }
+    };
+    walk(this.children.list, true);
+  }
+}
+
+Promise.all([document.fonts.load('900 40px Cinzel'), document.fonts.load('900 20px Nunito'), loadManifest()]).catch(() => {}).then(() => {
+  new Phaser.Game({
+    type: Phaser.AUTO, parent: 'game', backgroundColor: '#0d1b2a',
+    render: { antialias: true, mipmapFilter: 'LINEAR_MIPMAP_LINEAR' },
+    physics: { default: 'arcade', arcade: { debug: false } },
+    scale: { mode: Phaser.Scale.FIT, autoCenter: Phaser.Scale.CENTER_BOTH, width: Math.round(W * HD), height: Math.round(H * HD) },
+    scene: Climb,
+  });
+});
+</script>
+</body>
+</html>

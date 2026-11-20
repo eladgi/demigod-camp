@@ -1,0 +1,319 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Hydra Heads</title>
+<link href="https://fonts.googleapis.com/css2?family=Cinzel:wght@700;900&family=Nunito:wght@700;900&display=swap" rel="stylesheet">
+<style>
+  html, body { margin: 0; height: 100%; background: #0d1b2a; overflow: hidden; }
+  #game { width: 100%; height: 100%; }
+</style>
+<script src="https://cdn.jsdelivr.net/npm/phaser@3.80.1/dist/phaser.min.js"></script>
+</head>
+<body>
+<div id="game"></div>
+<script>
+// ---------- content ----------
+const WORDS = [
+  ['apple','🍎','תפוח'], ['fish','🐟','דג'], ['cat','🐱','חתול'], ['dog','🐶','כלב'],
+  ['sun','☀️','שמש'], ['star','⭐','כוכב'], ['ball','⚽','כדור'], ['tree','🌳','עץ'],
+  ['bird','🐦','ציפור'], ['car','🚗','מכונית'], ['book','📖','ספר'], ['cake','🎂','עוגה'],
+];
+const GOAL = 8, MAX_HEARTS = 3;
+
+// ---------- Hydra art ----------
+// One whole image per head count, all anchored at the bottom center (the water line).
+// Head points are in image pixels, measured on hydra_full.png. Missing variants fall back to the 3-head image.
+const HYDRA = {
+  scale: 0.75, x: 1010, y: 772,
+  images: { 3: 'hydra3', 2: 'hydra2', 1: 'hydra1' },
+  // the head that gets cut at each head count: right first, then left, then the middle one
+  cut: { 3: { x: 470, y: 215 }, 2: { x: 65, y: 270 }, 1: { x: 290, y: 85 } },
+  size: { w: 640, h: 691 },
+};
+const CARD_SLOTS = [ { x: 560, y: 215 }, { x: 715, y: 165 }, { x: 870, y: 215 } ];
+
+// ---------- audio ----------
+let voice = null;
+function pickVoice() { const v = speechSynthesis.getVoices(); voice = v.find(x => /en-US/.test(x.lang) && /female|zira|aria|jenny|samantha|google us/i.test(x.name)) || v.find(x => /^en/.test(x.lang)) || null; }
+speechSynthesis.onvoiceschanged = pickVoice; pickVoice();
+function say(text) { speechSynthesis.cancel(); const u = new SpeechSynthesisUtterance(text); if (voice) u.voice = voice; u.lang = 'en-US'; u.rate = 0.8; u.pitch = 1.1; speechSynthesis.speak(u); }
+let ac;
+function tone(f1, f2, dur, type = 'square', vol = .12) {
+  ac = ac || new AudioContext(); const o = ac.createOscillator(), g = ac.createGain(); o.type = type;
+  o.frequency.setValueAtTime(f1, ac.currentTime); o.frequency.exponentialRampToValueAtTime(f2, ac.currentTime + dur);
+  g.gain.setValueAtTime(vol, ac.currentTime); g.gain.exponentialRampToValueAtTime(.001, ac.currentTime + dur);
+  o.connect(g).connect(ac.destination); o.start(); o.stop(ac.currentTime + dur);
+}
+const sfx = {
+  slash: () => { tone(900, 200, .15, 'sawtooth', .08); setTimeout(() => tone(500, 1200, .12, 'triangle', .1), 60); },
+  coin: () => { tone(988, 988, .07, 'square', .05); setTimeout(() => tone(1319, 1319, .15, 'square', .05), 70); },
+  hurt: () => tone(220, 70, .35, 'sawtooth', .12),
+  roar: () => { tone(120, 60, .7, 'sawtooth', .15); tone(180, 90, .7, 'square', .06); },
+  puff: () => tone(300, 80, .3, 'triangle', .1),
+  win: () => [523, 659, 784, 1047].forEach((f, i) => setTimeout(() => tone(f, f, .25, 'square', .07), i * 140)),
+};
+
+// ---------- scene ----------
+class Battle extends Phaser.Scene {
+  constructor() { super('battle'); }
+
+  preload() {
+    this.load.on('loaderror', f => console.info('art not made yet, using fallback:', f.key));
+    this.load.image('bg', new URLSearchParams(location.search).get('bg') === 'gif' ? 'assets/sea_bg.gif' : 'assets/sea_bg.jpg');
+    this.load.image('hero', 'assets/hero.png');
+    this.load.image('hydra3', 'assets/hydra_full.png');
+    this.load.image('hydra2', 'assets/hydra_2heads.png');
+    this.load.image('hydra1', 'assets/hydra_1head.png');
+  }
+
+  makeTextures() {
+    const g = this.make.graphics({ add: false });
+    g.fillStyle(0xffffff).fillCircle(8, 8, 8).generateTexture('dot', 16, 16).clear();
+    g.fillStyle(0x7a5600).fillCircle(15, 15, 15).fillStyle(0xffc400).fillCircle(15, 15, 12).fillStyle(0xfff3a0).fillCircle(11, 11, 4).generateTexture('coin', 30, 30).clear();
+    for (let r = 40; r > 0; r -= 4) g.fillStyle(0xffffff, 0.08).fillCircle(40, 40, r);
+    g.generateTexture('smoke', 80, 80).clear();
+    g.fillStyle(0xffffff).fillEllipse(130, 14, 260, 14).generateTexture('slash', 260, 28).destroy();
+  }
+
+  create() {
+    this.makeTextures();
+    this.add.image(640, 360, 'bg').setDisplaySize(1280, 720);
+
+    // hero
+    this.hero = this.add.image(240, 528, 'hero').setOrigin(0.5, 1);
+    this.hero.setScale(360 / this.hero.height);
+    this.heroBase = { x: this.hero.x, y: this.hero.y, s: this.hero.scale };
+    this.tweens.add({ targets: this.hero, scaleY: this.heroBase.s * 1.015, duration: 900, yoyo: true, repeat: -1, ease: 'Sine.inOut' });
+
+    // hydra: one whole image, pivot at the water line
+    this.hydra = this.add.image(HYDRA.x, HYDRA.y, 'hydra3').setOrigin(0.5, 1).setScale(HYDRA.scale);
+    this.hydraIdle = [
+      this.tweens.add({ targets: this.hydra, scaleY: HYDRA.scale * 1.02, scaleX: HYDRA.scale * 0.99, duration: 1100, yoyo: true, repeat: -1, ease: 'Sine.inOut' }),
+      this.tweens.add({ targets: this.hydra, angle: { from: -1.5, to: 1.5 }, duration: 1700, yoyo: true, repeat: -1, ease: 'Sine.inOut' }),
+    ];
+
+    // particles
+    this.splash = this.add.particles(0, 0, 'dot', { speed: { min: 150, max: 420 }, angle: { min: 200, max: 340 }, gravityY: 900, lifespan: 900, scale: { start: 0.9, end: 0.2 }, tint: [0x3fbf6f, 0x9ff0c0, 0xd9fbe6], emitting: false }).setDepth(20);
+    this.smoke = this.add.particles(0, 0, 'smoke', { speed: { min: 40, max: 160 }, lifespan: 1100, scale: { start: 1.2, end: 3.2 }, alpha: { start: 0.95, end: 0 }, tint: [0xe8e8f0, 0xcfd6e6, 0xb8c2d8], rotate: { min: 0, max: 360 }, emitting: false }).setDepth(21);
+    this.sparks = this.add.particles(0, 0, 'dot', { speed: { min: 100, max: 300 }, lifespan: 600, scale: { start: 0.6, end: 0 }, tint: [0xfff3a0, 0xffd43b, 0xffffff], blendMode: 'ADD', emitting: false }).setDepth(22);
+
+    this.buildHud();
+    this.cards = CARD_SLOTS.map((s, i) => this.makeCard(s, i));
+    this.showTitle('Hydra Heads', 'Listen to the word.\nStrike the right picture!', 'Play');
+    window.battle = this; // handy for testing in the console
+  }
+
+  // ---------- UI ----------
+  buildHud() {
+    this.add.graphics().setDepth(30).fillStyle(0x2b1a0a).fillRoundedRect(20, 23, 130, 48, 24).fillStyle(0xfff8e6).fillRoundedRect(20, 18, 130, 48, 24).lineStyle(4, 0x2b1a0a).strokeRoundedRect(20, 18, 130, 48, 24);
+    this.add.image(46, 42, 'coin').setDepth(31);
+    this.coinText = this.add.text(70, 24, '0', { fontFamily: 'Nunito', fontSize: 28, fontStyle: '900', color: '#2b1a0a' }).setDepth(31);
+    this.heartText = this.add.text(22, 76, '', { fontSize: 34 }).setDepth(31);
+    // word bubble
+    this.bubble = this.add.container(420, 70).setDepth(30).setVisible(false);
+    this.bubbleBg = this.add.graphics();
+    this.bubbleWord = this.add.text(36, -3, '', { fontFamily: 'Cinzel', fontSize: 46, fontStyle: '900', color: '#2b1a0a' }).setOrigin(0, 0.5);
+    const spk = this.add.graphics().fillStyle(0x2e86de).fillCircle(0, -3, 26).fillStyle(0xffffff).fillRect(-12, -9, 7, 12).fillTriangle(-6, -3, 6, -17, 6, 11);
+    this.bubble.add([this.bubbleBg, spk, this.bubbleWord]);
+    this.bubble.setSize(320, 80).setInteractive({ useHandCursor: true }).on('pointerdown', () => this.target && say(this.target[0]));
+    // hydra health
+    this.add.text(640, 666, 'Hydra', { fontFamily: 'Nunito', fontSize: 18, fontStyle: '900', color: '#fff', stroke: '#000', strokeThickness: 4 }).setOrigin(0.5).setDepth(30);
+    this.add.graphics().setDepth(30).fillStyle(0x000000, 0.5).fillRoundedRect(430, 682, 420, 22, 11).lineStyle(3, 0x2b1a0a).strokeRoundedRect(430, 682, 420, 22, 11);
+    this.healthBar = this.add.graphics().setDepth(31);
+  }
+  drawBubble() {
+    const w = 110 + this.bubbleWord.width;
+    this.bubbleBg.clear().fillStyle(0x2b1a0a).fillRoundedRect(-48, -34, w, 74, 37).fillStyle(0xffffff).fillRoundedRect(-48, -40, w, 74, 37).lineStyle(5, 0x2b1a0a).strokeRoundedRect(-48, -40, w, 74, 37);
+  }
+  drawHealth() { const f = 1 - this.hits / GOAL; this.healthBar.clear(); if (f > 0) this.healthBar.fillStyle(0xe03e3e).fillRoundedRect(433, 685, 414 * f, 16, 8); }
+  drawHearts() { const h = Math.max(this.hearts, 0); this.heartText.setText('❤️'.repeat(h) + '🖤'.repeat(MAX_HEARTS - h)); }
+
+  makeCard(slot, i) {
+    const c = this.add.container(slot.x, slot.y).setDepth(25);
+    const glow = this.add.graphics().lineStyle(8, 0xffd43b).strokeRoundedRect(-58, -58, 116, 116, 26).setVisible(false);
+    const g = this.add.graphics().fillStyle(0x3a2410).fillRoundedRect(-50, -44, 100, 100, 20).fillStyle(0xfff8e6).fillRoundedRect(-50, -50, 100, 100, 20).lineStyle(5, 0x3a2410).strokeRoundedRect(-50, -50, 100, 100, 20);
+    const pic = this.add.text(0, -2, '', { fontSize: 58 }).setOrigin(0.5);
+    const he = this.add.text(0, 72, '', { fontFamily: 'Nunito', fontSize: 24, fontStyle: '900', color: '#ffe066', stroke: '#2b1a0a', strokeThickness: 6 }).setOrigin(0.5).setVisible(false);
+    c.add([glow, g, pic, he]);
+    c.setSize(100, 100).setInteractive({ useHandCursor: true });
+    c.on('pointerover', () => { if (!this.busy) this.tweens.add({ targets: c, scale: 1.1, angle: -4, duration: 120 }); });
+    c.on('pointerout', () => { if (!this.busy) this.tweens.add({ targets: c, scale: 1, angle: 0, duration: 120 }); });
+    c.on('pointerdown', () => this.pick(c));
+    Object.assign(c, { slot, pic, he, glow });
+    c.bob = this.tweens.add({ targets: c, y: slot.y - 10, duration: 1000 + i * 170, yoyo: true, repeat: -1, ease: 'Sine.inOut' });
+    c.setVisible(false);
+    return c;
+  }
+
+  showTitle(title, text, btn) {
+    this.running = false; this.bubble.setVisible(false); this.cards.forEach(c => c.setVisible(false));
+    const o = this.add.container(0, 0).setDepth(100);
+    o.add(this.add.rectangle(640, 360, 1280, 720, 0x050f1e, 0.72).setInteractive());
+    o.add(this.add.text(640, 230, title, { fontFamily: 'Cinzel', fontSize: 90, fontStyle: '900', color: '#ffd43b', stroke: '#6b4400', strokeThickness: 10 }).setOrigin(0.5));
+    o.add(this.add.text(640, 350, text, { fontFamily: 'Nunito', fontSize: 30, fontStyle: '700', color: '#ffffff', align: 'center' }).setOrigin(0.5));
+    const b = this.add.container(640, 470);
+    b.add([this.add.graphics().fillStyle(0x2b1a0a).fillRoundedRect(-140, -32, 280, 76, 38).fillStyle(0xffd43b).fillRoundedRect(-140, -40, 280, 76, 38).lineStyle(5, 0x2b1a0a).strokeRoundedRect(-140, -40, 280, 76, 38),
+           this.add.text(0, -2, btn, { fontFamily: 'Cinzel', fontSize: 40, fontStyle: '900', color: '#2b1a0a' }).setOrigin(0.5)]);
+    b.setSize(280, 76).setInteractive({ useHandCursor: true }).on('pointerdown', () => { o.destroy(); this.start(); });
+    b.on('pointerover', () => b.setScale(1.06)).on('pointerout', () => b.setScale(1));
+    o.add(b);
+    this.tweens.add({ targets: o, alpha: { from: 0, to: 1 }, duration: 300 });
+  }
+
+  // ---------- game flow ----------
+  start() {
+    Object.assign(this, { coins: 0, hits: 0, hearts: MAX_HEARTS, headCount: 3, busy: true, running: true, target: null });
+    this.coinText.setText('0'); this.drawHearts(); this.drawHealth(); this.setHydraTexture(3);
+    say('Here comes the Hydra!');
+    this.time.delayedCall(1300, () => this.newRound());
+  }
+
+  setHydraTexture(n) {
+    const key = HYDRA.images[n];
+    this.hydra.setTexture(this.textures.exists(key) ? key : 'hydra3');
+  }
+
+  newRound() {
+    const pool = Phaser.Utils.Array.Shuffle(WORDS.filter(w => w !== this.target)).slice(0, 3);
+    this.target = Phaser.Utils.Array.GetRandom(pool);
+    this.cards.forEach((c, i) => {
+      c.word = pool[i]; c.pic.setText(pool[i][1]); c.he.setText(pool[i][2]).setVisible(false); c.glow.setVisible(false);
+      c.setPosition(c.slot.x, c.slot.y).setAngle(0).setVisible(true).setScale(0);
+      this.tweens.add({ targets: c, scale: 1, duration: 350, delay: i * 90, ease: 'Back.out' });
+    });
+    this.bubbleWord.setText(this.target[0]); this.drawBubble();
+    this.bubble.setVisible(true).setScale(0.6);
+    this.tweens.add({ targets: this.bubble, scale: 1, duration: 300, ease: 'Back.out' });
+    this.time.delayedCall(300, () => say(this.target[0]));
+    this.time.delayedCall(400, () => { this.busy = false; });
+  }
+
+  headWorld(n) {
+    const p = HYDRA.cut[n], s = HYDRA.scale;
+    return { x: HYDRA.x + (p.x - HYDRA.size.w / 2) * s, y: HYDRA.y + (p.y - HYDRA.size.h) * s };
+  }
+
+  pick(card) {
+    if (!this.running || this.busy) return;
+    this.busy = true;
+    if (card.word === this.target) this.hit(card); else this.miss(card);
+  }
+
+  hit(card) {
+    const head = this.headWorld(this.headCount);
+    this.bubble.setVisible(false);
+    this.cards.filter(c => c !== card).forEach(c => this.tweens.add({ targets: c, scale: 0, duration: 200 }));
+    // the picked card flies into the head it will cut
+    card.bob.pause();
+    this.tweens.add({ targets: card, x: head.x, y: head.y, scale: 0.4, angle: 180, duration: 350, ease: 'Quad.in',
+      onComplete: () => { card.setVisible(false); card.bob.resume(); } });
+    // hero dash + slash
+    const hb = this.heroBase;
+    this.tweens.chain({ targets: this.hero, tweens: [
+      { x: hb.x - 20, angle: -6, duration: 120, ease: 'Quad.out' },
+      { x: Math.min(head.x - 230, 640), y: hb.y - 30, angle: 10, duration: 220, ease: 'Quad.in' },
+      { angle: 16, duration: 120 },
+      { x: hb.x, y: hb.y, angle: 0, duration: 380, ease: 'Quad.inOut' },
+    ]});
+    this.time.delayedCall(380, () => {
+      sfx.slash();
+      const sl = this.add.image(head.x, head.y, 'slash').setDepth(23).setAngle(-35).setScale(0.1, 1).setBlendMode('ADD');
+      this.tweens.add({ targets: sl, scaleX: 1.3, alpha: { from: 1, to: 0 }, duration: 320, ease: 'Quad.out', onComplete: () => sl.destroy() });
+      this.cameras.main.shake(250, 0.012);
+      this.hydra.setTintFill(0xffffff); this.time.delayedCall(90, () => this.hydra.clearTint());
+      this.splash.explode(40, head.x, head.y);
+      this.sparks.explode(20, head.x, head.y);
+      this.coinBurst(head.x, head.y, 5);
+      this.floatText('+10', head.x, head.y - 60, '#ffe066');
+      this.hits++; this.drawHealth();
+      this.time.delayedCall(250, () => this.cutHead());
+    });
+  }
+
+  // swap to the next whole Hydra image under a smoke puff
+  cutHead() {
+    const top = this.hydra.getTopCenter().y;
+    const puff = n => { for (let k = 0; k < n; k++) this.smoke.explode(1, HYDRA.x + Phaser.Math.Between(-200, 200), Phaser.Math.Between(top + 20, top + 260)); };
+    sfx.puff(); puff(26);
+    const next = this.headCount - 1;
+    this.time.delayedCall(180, () => {
+      if (this.hits >= GOAL) return this.hydraDefeated();
+      if (next >= 1) { this.headCount = next; this.setHydraTexture(next); this.time.delayedCall(700, () => this.newRound()); return; }
+      // no heads left: roar and grow three new ones
+      this.hydra.setVisible(false);
+      this.time.delayedCall(500, () => {
+        sfx.roar(); this.cameras.main.shake(500, 0.02); puff(36);
+        this.headCount = 3; this.setHydraTexture(3);
+        this.hydra.setVisible(true).setScale(HYDRA.scale * 0.6);
+        this.tweens.add({ targets: this.hydra, scaleX: HYDRA.scale, scaleY: HYDRA.scale, duration: 500, ease: 'Back.out' });
+        this.floatText('The Hydra grows back!', 900, 230, '#9ff0c0');
+        this.time.delayedCall(1200, () => this.newRound());
+      });
+    });
+  }
+
+  hydraDefeated() {
+    this.hydraIdle.forEach(t => t.pause());
+    sfx.roar();
+    for (let k = 0; k < 4; k++) this.time.delayedCall(k * 220, () => this.smoke.explode(14, HYDRA.x + Phaser.Math.Between(-150, 150), Phaser.Math.Between(330, 640)));
+    this.tweens.add({ targets: this.hydra, y: HYDRA.y + 520, angle: 8, duration: 1400, ease: 'Quad.in' });
+    this.time.delayedCall(1500, () => {
+      sfx.win(); say('You defeated the Hydra!');
+      this.showTitle('Victory!', `You defeated the Hydra\nand earned ${this.coins} drachmas!`, 'Play again');
+      this.hydra.setPosition(HYDRA.x, HYDRA.y).setAngle(0); this.hydraIdle.forEach(t => t.resume());
+    });
+  }
+
+  miss(card) {
+    // the whole Hydra lunges at the hero
+    this.tweens.chain({ targets: this.hydra, tweens: [
+      { x: HYDRA.x + 20, duration: 160, ease: 'Quad.out' },
+      { x: HYDRA.x - 90, duration: 170, ease: 'Quad.in' },
+      { x: HYDRA.x, duration: 400, ease: 'Quad.out' },
+    ]});
+    this.time.delayedCall(330, () => {
+      sfx.hurt(); this.hearts--; this.drawHearts();
+      this.cameras.main.shake(200, 0.01);
+      this.hero.setTintFill(0xff5050); this.time.delayedCall(120, () => this.hero.clearTint());
+      this.tweens.add({ targets: this.hero, x: this.heroBase.x - 30, angle: -7, duration: 120, yoyo: true });
+      this.floatText('Ouch!', 250, 140, '#ff8a8a');
+      this.tweens.add({ targets: card, angle: { from: -10, to: 10 }, duration: 60, yoyo: true, repeat: 3, onComplete: () => card.setAngle(0) });
+      const right = this.cards.find(c => c.word === this.target);
+      right.glow.setVisible(true); right.he.setVisible(true);
+      this.tweens.add({ targets: right, scale: 1.2, duration: 300, yoyo: true, repeat: 2 });
+      this.time.delayedCall(250, () => say(this.target[0]));
+      if (this.hearts <= 0) { this.time.delayedCall(1300, () => this.showTitle('The Hydra wins…', 'Every hero falls sometimes.\nTry again!', 'Try again')); return; }
+      this.time.delayedCall(900, () => { this.busy = false; });
+    });
+  }
+
+  // ---------- juice ----------
+  floatText(txt, x, y, color) {
+    const t = this.add.text(x, y, txt, { fontFamily: 'Nunito', fontSize: 34, fontStyle: '900', color, stroke: '#2b1a0a', strokeThickness: 6 }).setOrigin(0.5).setDepth(40);
+    this.tweens.add({ targets: t, y: y - 90, alpha: { from: 1, to: 0 }, scale: { from: 0.6, to: 1.2 }, duration: 1100, ease: 'Quad.out', onComplete: () => t.destroy() });
+  }
+  coinBurst(x, y, n) {
+    this.coins += 10;
+    for (let k = 0; k < n; k++) {
+      const c = this.add.image(x, y, 'coin').setDepth(35);
+      this.tweens.chain({ targets: c, tweens: [
+        { x: x + Phaser.Math.Between(-110, 110), y: y - Phaser.Math.Between(60, 170), duration: 350, ease: 'Quad.out' },
+        { x: 46, y: 42, scale: 0.6, duration: 550 + k * 70, ease: 'Quad.in' },
+      ], onComplete: () => { c.destroy(); sfx.coin(); this.coinText.setText(String(this.coins)); } });
+    }
+  }
+}
+
+// start once the fonts are ready so text uses the right typeface
+Promise.all([document.fonts.load('900 40px Cinzel'), document.fonts.load('900 20px Nunito')]).catch(() => {}).then(() => {
+  new Phaser.Game({
+    type: Phaser.AUTO, parent: 'game', backgroundColor: '#0d1b2a',
+    scale: { mode: Phaser.Scale.FIT, autoCenter: Phaser.Scale.CENTER_BOTH, width: 1280, height: 720 },
+    scene: Battle,
+  });
+});
+</script>
+</body>
+</html>

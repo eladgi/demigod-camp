@@ -1,0 +1,1460 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>The Voyage of Odysseus</title>
+<link href="https://fonts.googleapis.com/css2?family=Cinzel:wght@700;900&family=Nunito:wght@700;900&display=swap" rel="stylesheet">
+<style>
+  html, body { margin: 0; height: 100%; background: #0d1b2a; overflow: hidden; }
+  #game { width: 100%; height: 100%; }
+</style>
+<script src="https://cdn.jsdelivr.net/npm/phaser@3.80.1/dist/phaser.min.js"></script>
+<script src="common.js"></script>
+<script src="phrases.js"></script>
+<script src="voyage_text.js"></script>
+</head>
+<body>
+<div id="game"></div>
+<script>
+// =====================================================================
+//  THE VOYAGE OF ODYSSEUS: sail from island to island; on every island she reads and does what the note says.
+//  Scenes: Boot -> Sea (the map) -> Lotus, Cyclops, Circe, Sirens (deck) + SirensSea, Strait, Storm.
+// =====================================================================
+const W = 1280, H = 720;
+const COLORS = [ // [english, hex, hebrew fem with ה, hebrew masc with ה]
+  ['red', 0xe84545, 'האדומה', 'האדום'], ['blue', 0x3b82f6, 'הכחולה', 'הכחול'], ['green', 0x3fbf6f, 'הירוקה', 'הירוק'],
+  ['yellow', 0xffd43b, 'הצהובה', 'הצהוב'], ['purple', 0x9b5de5, 'הסגולה', 'הסגול'], ['orange', 0xff8a1f, 'הכתומה', 'הכתום'],
+];
+const colorOf = en => COLORS.find(c => c[0] === en);
+const pick = a => a[Math.floor(Math.random() * a.length)];
+const shuffle = a => Phaser.Utils.Array.Shuffle(a.slice());
+const aAn = w => (/^[aeiou]/.test(w) ? 'an ' : 'a ') + w;
+const LR_HE = { left: 'שמאל', right: 'ימין' }, LR_TO = { left: 'שמאלה', right: 'ימינה' }, OPP = { left: 'right', right: 'left' };
+
+const sfx = {
+  coin: () => { tone(988, 988, .06, 'square', .04); setTimeout(() => tone(1319, 1319, .12, 'square', .04), 60); },
+  good: () => [659, 880, 1175].forEach((f, i) => setTimeout(() => tone(f, f, .12, 'square', .06), i * 80)),
+  wrong: () => { tone(300, 200, .12, 'square', .07); setTimeout(() => tone(220, 150, .18, 'square', .07), 110); },
+  page: () => tone(800, 1200, .08, 'triangle', .04),
+  win: () => [523, 659, 784, 1047].forEach((f, i) => setTimeout(() => tone(f, f, .25, 'square', .07), i * 140)),
+  splash: () => tone(500, 120, .25, 'sawtooth', .05),
+  song: () => [880, 988, 1175, 988].forEach((f, i) => setTimeout(() => tone(f, f * 1.01, .3, 'sine', .05), i * 220)),
+  thunder: () => { tone(90, 40, .6, 'sawtooth', .09); setTimeout(() => tone(70, 35, .5, 'sawtooth', .07), 200); },
+};
+
+// who is speaking: [art keys to try, emoji, name shown on the note]
+const WHO = {
+  odysseus: [['art_odysseus'], '🧔', 'Odysseus'], hermes: [['art_hermes'], '🪽', 'Hermes'], circe: [['art_circe'], '🧙‍♀️', 'Circe'],
+  cyclops: [['art_cyclops'], '👁️', 'The Cyclops'], siren: [['art_siren', 'art_harpy'], '🧜‍♀️', 'The Sirens'],
+  penelope: [['art_penelope', 'card_penelope'], '👸', 'Penelope'], argos: [['card_argos'], '🐕', 'Argos'],
+  athena: [['card_athena'], '🦉', 'Athena'], poseidon: [['card_poseidon'], '🔱', 'Poseidon'], log: [[], '📜', ''], bottle: [[], '🍾', 'A message in a bottle'],
+};
+const ITEMS = [['fish', 'דג'], ['apple', 'תפוח'], ['ball', 'כדור'], ['banana', 'בננה'], ['umbrella', 'מטרייה']];
+
+// progress: how many islands are done (0..6)
+const Voyage = {
+  done() {
+    // a voyage that was already finished (also a save from before the game started over at the end): start again at Troy
+    const s = Save.get();
+    if ((s.voyage || 0) >= VOY_ISLANDS.length) { s.voyage = 0; Save.set(s); }
+    return s.voyage || 0;
+  },
+  finish(i) {
+    const s = Save.get(); s.voyage = Math.max(s.voyage || 0, i + 1); s.cards = s.cards || [];
+    const gifts = VOY_ISLANDS[i][4].filter(id => !s.cards.includes(id)); s.cards.push(...gifts);
+    // the whole voyage is done: the next game starts again at Troy (the cards, drachmas and stars stay)
+    if (i === VOY_ISLANDS.length - 1) s.voyage = 0;
+    Save.set(s); Save.markDone('voyage', i + 1);
+    return gifts;
+  },
+};
+
+// =====================================================================
+//  BASE: what every scene shares (cameras, notes with help, story pages, the hero, the ship, coins)
+// =====================================================================
+class Base extends Phaser.Scene {
+  has(k) { return this.textures.exists(k); }
+  // a repeating ground / sea; the Nano Banana tiles (512 px) are shown at half size, like the 256 px drawings
+  tile(x, y, w, h, key) {
+    const t = this.add.tileSprite(x, y, w, h, key), src = this.textures.get(key).getSourceImage();
+    if (src.width > 300) t.setTileScale(256 / src.width);
+    return t;
+  }
+  fit(o, w, h) { o.setScale(Math.min(w / o.width, h / o.height)); return o; }
+  // a picture: the first art key that exists, or else the emoji
+  pic(keys, emoji, x, y, size) {
+    const k = [].concat(keys || []).find(k => k && this.has(k));
+    if (k) return this.fit(this.add.image(x, y, k), size, size);
+    return this.add.text(x, y, emoji, { fontSize: Math.round(size * 0.8) }).setOrigin(0.5);
+  }
+
+  setup(ww, wh, title) {
+    this.ww = ww; this.wh = wh; this.busyStory = false; this.cur = null;
+    makeVoyageTextures(this);
+    this.physics.world.setBounds(0, 0, ww, wh);
+    this.cameras.main.setBounds(0, 0, ww, wh).setZoom(HD).centerOn(Math.min(W / 2, ww / 2), Math.min(H / 2, wh / 2));
+    this.uiCam = this.cameras.add(0, 0, Math.round(W * HD), Math.round(H * HD)).setOrigin(0, 0).setZoom(HD);
+    this.keys = this.input.keyboard.addKeys({ left: 'LEFT', right: 'RIGHT', up: 'UP', down: 'DOWN', a: 'A', d: 'D', w: 'W', s: 'S',
+      space: 'SPACE', enter: 'ENTER', r: 'R', one: 'ONE', two: 'TWO', three: 'THREE' });
+    this.input.keyboard.on('keydown-ESC', goToCamp);
+    this.sparks = this.add.particles(0, 0, 'soft', { speed: { min: 60, max: 200 }, lifespan: 650, scale: { start: 1.4, end: 0 }, tint: [0xffd43b, 0xfff3a0, 0xffffff], blendMode: 'ADD', emitting: false }).setDepth(3000);
+    this.hud(title);
+  }
+
+  hud(title) {
+    const d = 5000, fix = o => o.setScrollFactor(0).setDepth(d);
+    fix(this.add.graphics()).fillStyle(0x2b1a0a).fillRoundedRect(18, 21, 130, 46, 23).fillStyle(0xfff8e6).fillRoundedRect(18, 16, 130, 46, 23).lineStyle(4, 0x2b1a0a).strokeRoundedRect(18, 16, 130, 46, 23);
+    fix(this.add.image(44, 39, 'coin'));
+    this.coinText = fix(this.add.text(68, 22, String(Save.get().coins), { fontFamily: 'Nunito', fontSize: 27, fontStyle: '900', color: '#2b1a0a' }));
+    this.placeText = fix(this.add.text(W - 20, H - 54, title || '', { fontFamily: 'Cinzel', fontSize: 24, fontStyle: '900', color: '#fff8e6', stroke: '#2b1a0a', strokeThickness: 6 }).setOrigin(1, 1));
+    fix(this.add.text(W - 20, H - 16, '⌂ Camp', { fontFamily: 'Nunito', fontSize: 22, fontStyle: '900', color: '#fff8e6', stroke: '#2b1a0a', strokeThickness: 6 }).setOrigin(1, 1))
+      .setInteractive({ useHandCursor: true }).on('pointerdown', goToCamp);
+    // the note (top): who says it, the sentence, help after mistakes (🔊 after one, Hebrew after two)
+    this.noteBg = fix(this.add.graphics());
+    this.notePic = null;
+    this.noteWho = fix(this.add.text(W / 2 - 360, 30, '', { fontFamily: 'Cinzel', fontSize: 18, fontStyle: '900', color: '#7b4a1a' }).setOrigin(0, 0.5));
+    this.noteText = fix(this.add.text(W / 2 + 40, 74, '', { fontFamily: 'Nunito', fontSize: 30, fontStyle: '900', color: '#2b1a0a', align: 'center', wordWrap: { width: 800 }, lineSpacing: 4 }).setOrigin(0.5));
+    this.noteHe = fix(this.add.text(W / 2, 150, '', { fontFamily: 'Nunito', fontSize: 26, fontStyle: '900', color: '#ffe066', stroke: '#2b1a0a', strokeThickness: 6, align: 'center' }).setOrigin(0.5, 0).setVisible(false));
+    this.listen = fix(this.add.text(W / 2 + 480, 74, '🔊', { fontSize: 34, backgroundColor: '#fff8e6', padding: { x: 6, y: 2 } }).setOrigin(0.5)).setVisible(false)
+      .setInteractive({ useHandCursor: true }).on('pointerdown', () => this.readAloud());
+    // a second, smaller note (the Sirens' tricks, a message in a bottle)
+    this.note2Bg = fix(this.add.graphics()); this.note2Pic = null;
+    this.note2Text = fix(this.add.text(W / 2 + 30, 0, '', { fontFamily: 'Nunito', fontSize: 25, fontStyle: '900', color: '#5a1040', align: 'center', wordWrap: { width: 640 } }).setOrigin(0.5));
+    this.tip = this.add.text(0, 0, 'SPACE', { fontFamily: 'Nunito', fontSize: 22, fontStyle: '900', color: '#ffffff', backgroundColor: '#7b5cd6', padding: { x: 10, y: 3 } }).setOrigin(0.5).setDepth(4000).setVisible(false);
+  }
+
+  // show a note: { en, he, who }
+  note(en, he, who = 'odysseus') { this.cur = { en, he, who, mistakes: 0 }; this.drawNote(true); }
+  drawNote(pop) {
+    const n = this.cur;
+    if (!n) { this.noteBg.clear(); this.noteText.setText(''); this.noteWho.setText(''); this.noteHe.setVisible(false); this.listen.setVisible(false); if (this.notePic) this.notePic.destroy(); this.notePic = null; return; }
+    this.noteText.setText(n.en);
+    const h = Math.max(96, this.noteText.height + 44), top = 74 - h / 2 + 6;
+    const fill = n.who === 'siren' ? 0xffd6ec : n.who === 'athena' ? 0xe3f0ff : n.who === 'bottle' ? 0xe8fff0 : 0xfff3d6;
+    this.noteBg.clear().fillStyle(0x2b1a0a).fillRoundedRect(W / 2 - 470, top + 6, 940, h, 18).fillStyle(fill).fillRoundedRect(W / 2 - 470, top, 940, h, 18).lineStyle(5, 0x2b1a0a).strokeRoundedRect(W / 2 - 470, top, 940, h, 18);
+    this.noteText.setY(top + h / 2 + 4);
+    if (this.notePic) this.notePic.destroy();
+    const wh = WHO[n.who] || WHO.log;
+    this.notePic = this.pic(wh[0], wh[1], W / 2 - 418, top + h / 2, 70).setScrollFactor(0).setDepth(5001);
+    this.noteWho.setText(wh[2] ? wh[2] + ':' : '').setY(top + 16);
+    this.noteHe.setText(n.he).setY(top + h + 14).setVisible(n.mistakes >= 2);
+    this.listen.setVisible(n.mistakes >= 1).setY(top + h / 2);
+    if (pop) { this.tweens.add({ targets: this.noteText, scale: { from: 0.85, to: 1 }, duration: 250, ease: 'Back.out' }); sfx.page(); }
+  }
+  clearNote() { this.cur = null; this.drawNote(); }
+  note2(en, who) {
+    if (this.note2Pic) this.note2Pic.destroy(); this.note2Pic = null;
+    if (!en) { this.note2Bg.clear(); this.note2Text.setText(''); return; }
+    this.note2Text.setText(en).setColor(who === 'siren' ? '#5a1040' : '#1d4d2a');
+    const top = 158 + (this.cur && this.cur.mistakes >= 2 ? 44 : 0), h = this.note2Text.height + 30;
+    this.note2Bg.clear().fillStyle(0x2b1a0a).fillRoundedRect(W / 2 - 360, top + 5, 720, h, 16).fillStyle(who === 'siren' ? 0xffc2e2 : 0xd8f5dd).fillRoundedRect(W / 2 - 360, top, 720, h, 16).lineStyle(4, 0x2b1a0a).strokeRoundedRect(W / 2 - 360, top, 720, h, 16);
+    this.note2Text.setY(top + h / 2);
+    const wh = WHO[who] || WHO.log;
+    this.note2Pic = this.pic(wh[0], wh[1], W / 2 - 320, top + h / 2, 52).setScrollFactor(0).setDepth(5001);
+  }
+  // a mistake: same note again, now with help
+  miss(msg, x, y, onScreen) {
+    if (this.cur) { this.cur.mistakes++; this.drawNote(false); }
+    sfx.wrong(); this.cameras.main.shake(120, 0.004);
+    if (msg) this.floatText(msg, x ?? W / 2, y ?? H / 2, '#ff9b9b', 28, onScreen ?? x === undefined);
+  }
+  readAloud() { if (this.cur) say(this.cur.en); }
+
+  floatText(txt, x, y, color = '#ffe066', size = 30, onScreen = false) {
+    const t = this.add.text(x, y, txt, { fontFamily: 'Nunito', fontSize: size, fontStyle: '900', color, stroke: '#2b1a0a', strokeThickness: 6, align: 'center' }).setOrigin(0.5).setDepth(onScreen ? 7000 : 4500);
+    if (onScreen) t.setScrollFactor(0);
+    this.tweens.add({ targets: t, y: y - 70, alpha: { from: 1, to: 0 }, duration: 1500, ease: 'Quad.out', onComplete: () => t.destroy() });
+    return t;
+  }
+  addCoins(n, x, y) {
+    for (let k = 0; k < n; k++) this.time.delayedCall(k * 70, () => { const c = Save.addCoins(1); this.coinText.setText(String(c)); sfx.coin(); });
+    if (x !== undefined) this.sparks.explode(10 + n * 2, x, y);
+  }
+  banner(title, sub) {
+    const t = this.add.text(W / 2, 300, title, { fontFamily: 'Cinzel', fontSize: 78, fontStyle: '900', color: '#ffd43b', stroke: '#6b4400', strokeThickness: 10, align: 'center' }).setOrigin(0.5).setDepth(8000).setScrollFactor(0);
+    const s = this.add.text(W / 2, 390, sub || '', { fontFamily: 'Nunito', fontSize: 34, fontStyle: '900', color: '#fff', stroke: '#2b1a0a', strokeThickness: 7 }).setOrigin(0.5).setDepth(8000).setScrollFactor(0);
+    this.tweens.add({ targets: [t, s], scale: { from: 0.4, to: 1 }, duration: 400, ease: 'Back.out' });
+    this.tweens.add({ targets: [t, s], alpha: 0, delay: 1700, duration: 400, onComplete: () => { t.destroy(); s.destroy(); } });
+  }
+
+  // ---------- story pages: a picture of who speaks and one or two sentences; SPACE / ENTER / the button for the next page ----------
+  story(pages, done) {
+    this.busyStory = true; this.tip.setVisible(false);
+    let i = 0;
+    const o = this.add.container(0, 0).setDepth(9000);
+    const add = obj => { o.add(obj); return obj; };
+    add(this.add.rectangle(W / 2, H / 2, W, H, 0x050f1e, 0.78).setInteractive());
+    add(this.add.graphics()).fillStyle(0x2b1a0a).fillRoundedRect(150, 170, 980, 390, 26).fillStyle(0xfff3d6).fillRoundedRect(150, 162, 980, 390, 26).lineStyle(6, 0x2b1a0a).strokeRoundedRect(150, 162, 980, 390, 26);
+    add(this.add.graphics()).fillStyle(0xf6dca0).fillCircle(330, 340, 125).lineStyle(5, 0x2b1a0a).strokeCircle(330, 340, 125);
+    const name = add(this.add.text(330, 490, '', { fontFamily: 'Cinzel', fontSize: 24, fontStyle: '900', color: '#7b4a1a' }).setOrigin(0.5));
+    const text = add(this.add.text(800, 330, '', { fontFamily: 'Nunito', fontSize: 38, fontStyle: '900', color: '#2b1a0a', align: 'center', wordWrap: { width: 560 }, lineSpacing: 6 }).setOrigin(0.5));
+    const he = add(this.add.text(800, 470, '', { fontFamily: 'Nunito', fontSize: 26, fontStyle: '900', color: '#9a5a10', align: 'center', wordWrap: { width: 560 } }).setOrigin(0.5).setVisible(false));
+    const small = (x, label, fn) => { const t = add(this.add.text(x, 520, label, { fontFamily: 'Nunito', fontSize: 24, fontStyle: '900', color: '#2b1a0a', backgroundColor: '#f0e2c4', padding: { x: 10, y: 4 } }).setOrigin(0.5)); t.setInteractive({ useHandCursor: true }).on('pointerdown', fn); return t; };
+    small(560, '🔊', () => say(pages[i].en));
+    small(650, 'עברית', () => he.setVisible(!he.visible));
+    const btn = add(this.add.container(1010, 600));
+    btn.add([this.add.graphics().fillStyle(0x2b1a0a).fillRoundedRect(-110, -26, 220, 62, 31).fillStyle(0xffd43b).fillRoundedRect(-110, -32, 220, 62, 31).lineStyle(4, 0x2b1a0a).strokeRoundedRect(-110, -32, 220, 62, 31),
+             this.add.text(0, -2, 'Next ▶', { fontFamily: 'Cinzel', fontSize: 28, fontStyle: '900', color: '#2b1a0a' }).setOrigin(0.5)]);
+    btn.setSize(220, 62).setInteractive({ useHandCursor: true }).on('pointerdown', () => next());
+    let picObj = null;
+    const show = () => {
+      const p = pages[i], wh = WHO[p.who] || WHO.log;
+      if (picObj) picObj.destroy();
+      picObj = add(this.pic(p.pic ? [p.pic] : wh[0], p.emoji || wh[1], 330, 340, 210));
+      name.setText(wh[2]); text.setText(p.en); he.setText(p.he).setVisible(false);
+      [o, btn, ...o.list, ...btn.list].forEach(c => c.setScrollFactor(0));
+      this.tweens.add({ targets: text, alpha: { from: 0, to: 1 }, duration: 250 });
+      sfx.page();
+    };
+    const next = () => {
+      if (!o.active) return;
+      i++;
+      if (i >= pages.length) { o.destroy(); this.storyNext = null; this.time.delayedCall(60, () => { this.busyStory = false; done && done(); }); }
+      else show();
+    };
+    this.storyNext = next;
+    show();
+  }
+
+  // ---------- a choice of answers (buttons, or keys 1-3) ----------
+  choice(question, who, options, onPick) {
+    this.busyStory = true;
+    const o = this.add.container(0, 0).setDepth(9000);
+    o.add(this.add.rectangle(W / 2, H / 2, W, H, 0x050f1e, 0.6).setInteractive());
+    const wh = WHO[who];
+    o.add(this.add.graphics().fillStyle(0x2b1a0a).fillRoundedRect(200, 196, 880, 130, 22).fillStyle(0xfff3d6).fillRoundedRect(200, 190, 880, 130, 22));
+    o.add(this.pic(wh[0], wh[1], 270, 255, 100));
+    o.add(this.add.text(680, 255, question, { fontFamily: 'Nunito', fontSize: 34, fontStyle: '900', color: '#2b1a0a', align: 'center', wordWrap: { width: 680 } }).setOrigin(0.5));
+    const done = i => { if (!o.active) return; o.destroy(); this.choiceKeys = null; this.time.delayedCall(60, () => { this.busyStory = false; onPick(i); }); };
+    options.forEach((t, i) => {
+      const b = this.add.container(W / 2, 400 + i * 86);
+      b.add([this.add.graphics().fillStyle(0x2b1a0a).fillRoundedRect(-300, -28, 600, 64, 20).fillStyle(0x9bd8ff).fillRoundedRect(-300, -34, 600, 64, 20).lineStyle(4, 0x2b1a0a).strokeRoundedRect(-300, -34, 600, 64, 20),
+             this.add.text(0, -2, `${i + 1}.  ${t}`, { fontFamily: 'Nunito', fontSize: 30, fontStyle: '900', color: '#2b1a0a' }).setOrigin(0.5)]);
+      b.setSize(600, 64).setInteractive({ useHandCursor: true }).on('pointerdown', () => done(i)).on('pointerover', () => b.setScale(1.04)).on('pointerout', () => b.setScale(1));
+      o.add(b); b.list.forEach(c => c.setScrollFactor(0)); b.setScrollFactor(0);
+    });
+    o.list.forEach(c => c.setScrollFactor(0)); o.setScrollFactor(0);
+    this.choiceKeys = done;
+  }
+
+  // ---------- the end of an island: progress, gift cards, then back to the sea ----------
+  finishIsland(i, after) {
+    this.clearNote(); this.note2(null);
+    const gifts = Voyage.finish(i);
+    sfx.win(); this.banner('Well done!', VOY_ISLANDS[i][1]);
+    this.addCoins(10);
+    const showGift = k => {
+      if (k >= gifts.length) return after ? after() : this.time.delayedCall(300, () => this.cameras.main.fadeOut(400)) && this.time.delayedCall(750, () => this.scene.start('Sea', { from: i }));
+      const c = CARDS.find(c => c[0] === gifts[k]);
+      const o = this.add.container(0, 0).setDepth(9500);
+      o.add(this.add.rectangle(W / 2, H / 2, W, H, 0x050f1e, 0.78).setInteractive());
+      o.add(this.add.text(W / 2, 110, 'A new card for your album!', { fontFamily: 'Cinzel', fontSize: 40, fontStyle: '900', color: '#ffd43b', stroke: '#6b4400', strokeThickness: 8 }).setOrigin(0.5));
+      o.add(this.add.graphics().fillStyle(0x2b1a0a).fillRoundedRect(W / 2 - 150, 160, 300, 400, 22).fillStyle(c[2] === 'monster' ? 0x8e44ad : 0x2f9e44).fillRoundedRect(W / 2 - 146, 156, 292, 396, 20).fillStyle(0xfff8e6).fillRoundedRect(W / 2 - 130, 172, 260, 230, 14));
+      o.add(this.pic(['card_' + c[0]], c[3], W / 2, 287, 210));
+      o.add(this.add.text(W / 2, 430, c[1], { fontFamily: 'Cinzel', fontSize: 30, fontStyle: '900', color: '#fff8e6', stroke: '#2b1a0a', strokeThickness: 6 }).setOrigin(0.5));
+      o.add(this.add.text(W / 2, 495, c[4], { fontFamily: 'Nunito', fontSize: 17, fontStyle: '900', color: '#fff8e6', align: 'center', wordWrap: { width: 260 } }).setOrigin(0.5));
+      o.add(this.add.text(W / 2, 620, 'SPACE ▶', { fontFamily: 'Nunito', fontSize: 26, fontStyle: '900', color: '#fff8e6' }).setOrigin(0.5));
+      o.list.forEach(x => x.setScrollFactor(0)); o.setScrollFactor(0);
+      o.setAlpha(0); this.tweens.add({ targets: o, alpha: 1, duration: 300 });
+      sfx.good();
+      this.busyStory = true;
+      this.storyNext = () => { o.destroy(); this.storyNext = null; this.busyStory = false; showGift(k + 1); };
+    };
+    this.time.delayedCall(1900, () => showGift(0));
+  }
+
+  // keys for story pages and choices; returns true while one of them is open
+  baseUpdate() {
+    hdTick(this, this.uiCam);
+    const k = this.keys, J = Phaser.Input.Keyboard.JustDown;
+    if (this.choiceKeys) { [k.one, k.two, k.three].forEach((key, i) => { if (J(key)) this.choiceKeys(i); }); return true; }
+    if (this.storyNext) { if (J(k.space) || J(k.enter)) this.storyNext(); return true; }
+    if (this.cur && this.cur.mistakes >= 1 && J(k.r)) this.readAloud();
+    return this.busyStory;
+  }
+
+  // ---------- the hero, walking (seen from above) ----------
+  makeHero(x, y) {
+    this.player = this.physics.add.image(x, y, 'px').setVisible(false);
+    this.player.body.setSize(34, 26).setCollideWorldBounds(true);
+    this.animated = this.has('hero_walk');
+    if (this.animated && !this.anims.exists('hero_down'))
+      ['down', 'left', 'right', 'up'].forEach((d, r) => this.anims.create({ key: 'hero_' + d, frames: this.anims.generateFrameNumbers('hero_walk', { start: r * 4, end: r * 4 + 3 }), frameRate: 8, repeat: -1 }));
+    this.heroImg = (this.animated ? this.add.sprite(x, y, 'hero_walk', 0) : this.add.image(x, y, 'hero')).setOrigin(0.5, 0.92);
+    this.heroImg.setScale(this.animated ? 104 / 256 : 92 / this.heroImg.height);
+    this.heroShade = this.add.ellipse(x, y, 46, 16, 0x000000, 0.25).setDepth(3);
+    this.heroDir = 'up'; this.heroSlow = 0;
+    this.gear = Gear.attach(this, this.heroImg);
+  }
+  moveHero(canMove, speed = 270) {
+    const k = this.keys;
+    let vx = 0, vy = 0;
+    if (canMove) {
+      if (k.left.isDown || k.a.isDown) vx -= 1;
+      if (k.right.isDown || k.d.isDown) vx += 1;
+      if (k.up.isDown || k.w.isDown) vy -= 1;
+      if (k.down.isDown || k.s.isDown) vy += 1;
+    }
+    // dizzy (the lotus): slow, and the arrows go the wrong way
+    if (this.heroSlow > 0 && this.heroDizzy) { vx = -vx; vy = -vy; }
+    const len = Math.hypot(vx, vy) || 1, sp = this.heroSlow > 0 ? speed * 0.5 : speed;
+    this.player.setVelocity(vx / len * sp, vy / len * sp);
+    const moving = vx || vy, h = this.heroImg;
+    if (moving) this.heroDir = Math.abs(vx) > Math.abs(vy) ? (vx < 0 ? 'left' : 'right') : (vy < 0 ? 'up' : 'down');
+    h.setPosition(this.player.x, this.player.y + 12).setDepth(this.player.y + 45);
+    this.heroShade.setPosition(this.player.x, this.player.y + 8);
+    if (this.animated) {
+      if (moving) { if (h.anims.currentAnim?.key !== 'hero_' + this.heroDir || !h.anims.isPlaying) h.play('hero_' + this.heroDir); }
+      else { h.anims.stop(); h.setFrame(['down', 'left', 'right', 'up'].indexOf(this.heroDir) * 4); }
+    }
+  }
+  // the closest thing she can use (things have .spot), shows the SPACE tip over it
+  nearest(list, dist = 80) {
+    let best = null, bd = dist;
+    for (const o of list) { if (o.gone) continue; const d = Phaser.Math.Distance.Between(o.spot.x, o.spot.y, this.player.x, this.player.y); if (d < bd) { bd = d; best = o; } }
+    this.tip.setVisible(!!best && !this.busyStory);
+    if (best) this.tip.setPosition(best.spot.x, best.spot.y - (best.tipUp || 110));
+    return best;
+  }
+
+  // a sailor: the villager man from Hermes Express with a coloured hat (and maybe something in his hand)
+  sailor(x, y, hat, item) {
+    const s = { x, y, hat, item };
+    this.sailorN = (this.sailorN || 0) + 1;
+    const key = 'v_sailor_' + ((this.sailorN - 1) % 4 + 1);
+    s.img = this.pic([key, 'art_man'], '🧔', x, y, 80).setDepth(y + 40);
+    if (hat) {
+      const c = colorOf(hat)[1];
+      // where the head is in this picture: the same measuring the shop's hats use
+      let hx = x, hy = y - 36, hw = 46;
+      if (s.img.texture && s.img.texture.key !== '__DEFAULT' && s.img.frame) {
+        const a = Gear.anchor(this, s.img.texture.key, '__BASE'), k = s.img.scaleX;
+        hx = x + (a.x - a.w / 2) * k; hy = y - s.img.displayHeight / 2 + a.y * k + 4; hw = Math.max(34, a.hw * k * 1.35);
+      }
+      s.hatImg = this.has('art_hat') ? this.fit(this.add.image(hx, hy, 'art_hat'), hw, hw * 0.65).setTint(c) : this.add.ellipse(hx, hy + 4, 44, 16, c).setStrokeStyle(3, 0x2b1a0a);
+      s.hatImg.setDepth(y + 41);
+    }
+    if (item) s.itemImg = this.pic([iconKey(item)], '❓', x + 32, y + 14, 34).setDepth(y + 42);
+    s.parts = [s.img, s.hatImg, s.itemImg].filter(Boolean);
+    s.shade = this.add.ellipse(x, y + 36, 44, 14, 0x000000, 0.22).setDepth(2);
+    s.spot = { x, y: y + 50 };
+    return s;
+  }
+  // a little puff of stars
+  poof(x, y, n = 18) { this.sparks.explode(n, x, y); }
+  // a sailor (or anything with .parts) walks around near home, slowly, again and again
+  roam(o, radius, speed = 40) {
+    if (o.gone || o.frozen) return;
+    o.parts.forEach(pt => { if (pt.bx === undefined) { pt.bx = pt.x - o.x; pt.by = pt.y - o.y; } });
+    if (o.hx === undefined) { o.hx = o.x; o.hy = o.y; }
+    const nx = o.hx + Phaser.Math.Between(-radius, radius), ny = o.hy + Phaser.Math.Between(-radius * 0.6, radius * 0.6);
+    const dur = Math.max(600, Phaser.Math.Distance.Between(o.x, o.y, nx, ny) / speed * 1000);
+    if (o.img.setFlipX) o.img.setFlipX(nx < o.x);
+    o.roamTween = this.tweens.add({ targets: o, x: nx, y: ny, duration: dur, delay: Phaser.Math.Between(300, 1600), ease: 'Sine.inOut',
+      onUpdate: () => this.place(o), onComplete: () => this.roam(o, radius, speed) });
+  }
+  place(o) {
+    o.parts.forEach(pt => { pt.setPosition(o.x + pt.bx, o.y + pt.by); pt.setDepth(o.y + 40 + (pt === o.img ? 0 : 1)); });
+    if (o.shade) o.shade.setPosition(o.x, o.y + 36);
+    o.spot.x = o.x; o.spot.y = o.y + 50;
+  }
+
+  // the ship, seen from above, pointing up
+  makeShip(x, y) {
+    const s = this.physics.add.image(x, y, 'ship').setDepth(50);
+    s.body.setSize(60, 120).setCollideWorldBounds(true);
+    return s;
+  }
+}
+
+// =====================================================================
+//  TEXTURES drawn by code (until the Nano Banana art exists)
+// =====================================================================
+function canvasTex(scene, key, w, h, draw) {
+  if (scene.textures.exists(key)) return key;
+  const c = scene.textures.createCanvas(key, w, h); draw(c.getContext(), w, h); c.refresh(); return key;
+}
+const OUT = '#2b1a0a';
+function blob(x, cx, cy, rx, ry, fill, line = OUT, lw = 4) { x.beginPath(); x.ellipse(cx, cy, rx, ry, 0, 0, 7); x.fillStyle = fill; x.fill(); if (line) { x.lineWidth = lw; x.strokeStyle = line; x.stroke(); } }
+function makeVoyageTextures(scene) {
+  const g = scene.make.graphics({ add: false });
+  if (!scene.textures.exists('px')) g.fillStyle(0xffffff, 0).fillRect(0, 0, 4, 4).generateTexture('px', 4, 4).clear();
+  if (!scene.textures.exists('coin')) g.fillStyle(0x7a5600).fillCircle(14, 14, 14).fillStyle(0xffc400).fillCircle(14, 14, 11).fillStyle(0xfff3a0).fillCircle(10, 10, 4).generateTexture('coin', 28, 28).clear();
+  if (!scene.textures.exists('soft')) { for (let r = 10; r > 0; r -= 2) g.fillStyle(0xffffff, 0.15).fillCircle(10, 10, r); g.generateTexture('soft', 20, 20).clear(); }
+  g.destroy();
+  // the ship from above: a wooden hull pointing up, a white sail with a red stripe across it
+  if (!scene.has('art_ship')) canvasTex(scene, 'ship', 90, 180, (x) => {
+    x.beginPath(); x.moveTo(45, 4); x.quadraticCurveTo(84, 50, 80, 120); x.quadraticCurveTo(76, 168, 45, 174); x.quadraticCurveTo(14, 168, 10, 120); x.quadraticCurveTo(6, 50, 45, 4); x.closePath();
+    const gr = x.createLinearGradient(10, 0, 80, 0); gr.addColorStop(0, '#7a4a24'); gr.addColorStop(0.5, '#b0743c'); gr.addColorStop(1, '#7a4a24');
+    x.fillStyle = gr; x.fill(); x.lineWidth = 5; x.strokeStyle = OUT; x.stroke();
+    x.strokeStyle = 'rgba(43,26,10,.35)'; x.lineWidth = 2; for (let i = 30; i < 170; i += 16) { x.beginPath(); x.moveTo(20, i); x.lineTo(70, i); x.stroke(); }
+    x.fillStyle = OUT; x.fillRect(4, 70, 82, 30); x.fillStyle = '#fffaf0'; x.fillRect(7, 72, 76, 25); x.fillStyle = '#e84545'; x.fillRect(7, 80, 76, 8);
+    blob(x, 45, 85, 6, 6, '#5a3416');
+  });
+  if (scene.has('art_ship') && !scene.textures.exists('ship')) scene.textures.addImage('ship', scene.textures.get('art_ship').getSourceImage());
+  // the sea: deep blue with light wave marks (tiles)
+  canvasTex(scene, 'sea', 256, 256, (x) => {
+    x.fillStyle = '#2f86c4'; x.fillRect(0, 0, 256, 256);
+    x.strokeStyle = 'rgba(190,230,255,.55)'; x.lineWidth = 3; x.lineCap = 'round';
+    [[30, 40], [150, 30], [90, 110], [200, 140], [40, 190], [150, 220], [220, 70]].forEach(([wx, wy]) => { x.beginPath(); x.moveTo(wx - 14, wy); x.quadraticCurveTo(wx - 7, wy - 7, wx, wy); x.quadraticCurveTo(wx + 7, wy + 7, wx + 14, wy); x.stroke(); });
+  });
+  canvasTex(scene, 'darksea', 256, 256, (x) => {
+    x.fillStyle = '#1c3a57'; x.fillRect(0, 0, 256, 256);
+    x.strokeStyle = 'rgba(160,190,220,.35)'; x.lineWidth = 3;
+    [[30, 40], [150, 30], [90, 110], [200, 140], [40, 190], [150, 220]].forEach(([wx, wy]) => { x.beginPath(); x.moveTo(wx - 16, wy); x.quadraticCurveTo(wx - 8, wy - 9, wx, wy); x.quadraticCurveTo(wx + 8, wy + 9, wx + 16, wy); x.stroke(); });
+  });
+  canvasTex(scene, 'sand', 256, 256, (x) => {
+    x.fillStyle = '#f1d9a4'; x.fillRect(0, 0, 256, 256);
+    x.fillStyle = 'rgba(160,120,60,.25)'; for (let i = 0; i < 70; i++) { x.beginPath(); x.arc((i * 97) % 256, (i * 57) % 256, 2 + (i % 3), 0, 7); x.fill(); }
+  });
+  canvasTex(scene, 'cave', 256, 256, (x) => {
+    x.fillStyle = '#5b4636'; x.fillRect(0, 0, 256, 256);
+    x.fillStyle = 'rgba(30,20,10,.3)'; for (let i = 0; i < 40; i++) { x.beginPath(); x.ellipse((i * 83) % 256, (i * 47) % 256, 10 + (i % 5) * 4, 6 + (i % 3) * 3, 0, 0, 7); x.fill(); }
+  });
+  canvasTex(scene, 'grass', 256, 256, (x) => {
+    x.fillStyle = '#8fcf6a'; x.fillRect(0, 0, 256, 256);
+    x.strokeStyle = 'rgba(60,120,40,.35)'; x.lineWidth = 2; for (let i = 0; i < 90; i++) { const gx = (i * 71) % 256, gy = (i * 37) % 256; x.beginPath(); x.moveTo(gx, gy); x.lineTo(gx + 3, gy - 7); x.stroke(); }
+  });
+  canvasTex(scene, 'deck', 256, 64, (x) => {
+    x.fillStyle = '#b0743c'; x.fillRect(0, 0, 256, 64);
+    x.strokeStyle = 'rgba(60,30,10,.45)'; x.lineWidth = 3; x.beginPath(); x.moveTo(0, 31); x.lineTo(256, 31); x.moveTo(0, 63); x.lineTo(256, 63); x.moveTo(90, 0); x.lineTo(90, 31); x.moveTo(200, 32); x.lineTo(200, 63); x.stroke();
+  });
+  // a lotus flower patch
+  canvasTex(scene, 'lotus', 70, 50, (x) => {
+    blob(x, 35, 34, 32, 14, '#5fbf4a', OUT, 3);
+    [[20, 26], [36, 20], [52, 28]].forEach(([fx, fy]) => { for (let k = 0; k < 6; k++) { const a = k / 6 * Math.PI * 2; blob(x, fx + Math.cos(a) * 6, fy + Math.sin(a) * 6, 6, 6, '#ff8cc6', OUT, 2); } blob(x, fx, fy, 4, 4, '#ffd43b', null); });
+  });
+  canvasTex(scene, 'rock', 160, 110, (x) => {
+    x.beginPath(); x.moveTo(12, 96); x.quadraticCurveTo(0, 50, 40, 30); x.quadraticCurveTo(70, 0, 110, 22); x.quadraticCurveTo(156, 40, 150, 92); x.quadraticCurveTo(80, 112, 12, 96); x.closePath();
+    const gr = x.createLinearGradient(0, 0, 0, 110); gr.addColorStop(0, '#b9b2a6'); gr.addColorStop(1, '#6f665a'); x.fillStyle = gr; x.fill(); x.lineWidth = 5; x.strokeStyle = OUT; x.stroke();
+    x.strokeStyle = 'rgba(43,26,10,.35)'; x.lineWidth = 3; x.beginPath(); x.moveTo(60, 40); x.lineTo(80, 70); x.lineTo(70, 90); x.stroke();
+  });
+  canvasTex(scene, 'whirl', 240, 240, (x) => {
+    for (let r = 115; r > 5; r -= 14) { x.beginPath(); x.arc(120, 120, r, 0, 7); x.fillStyle = r % 28 < 14 ? 'rgba(10,40,80,.55)' : 'rgba(120,190,240,.45)'; x.fill(); }
+    x.strokeStyle = 'rgba(255,255,255,.75)'; x.lineWidth = 5;
+    for (let k = 0; k < 4; k++) { x.beginPath(); for (let t = 0; t < 1; t += 0.02) { const a = k * Math.PI / 2 + t * 6, r = 110 * (1 - t); x.lineTo(120 + Math.cos(a) * r, 120 + Math.sin(a) * r); } x.stroke(); }
+  });
+  canvasTex(scene, 'wave', 300, 140, (x) => {
+    x.beginPath(); x.moveTo(0, 140); x.lineTo(0, 70); x.quadraticCurveTo(80, 0, 170, 30); x.quadraticCurveTo(230, 50, 210, 85); x.quadraticCurveTo(250, 60, 300, 70); x.lineTo(300, 140); x.closePath();
+    const gr = x.createLinearGradient(0, 0, 0, 140); gr.addColorStop(0, '#e8f6ff'); gr.addColorStop(0.4, '#5fa8de'); gr.addColorStop(1, '#1d5d99'); x.fillStyle = gr; x.fill(); x.lineWidth = 5; x.strokeStyle = '#0d2a4a'; x.stroke();
+  });
+  canvasTex(scene, 'bolt', 80, 260, (x) => {
+    x.beginPath(); x.moveTo(50, 0); x.lineTo(14, 120); x.lineTo(40, 120); x.lineTo(22, 260); x.lineTo(70, 100); x.lineTo(44, 100); x.lineTo(66, 0); x.closePath();
+    x.fillStyle = '#fff6a0'; x.fill(); x.lineWidth = 4; x.strokeStyle = '#e8a400'; x.stroke();
+  });
+  canvasTex(scene, 'bottle', 60, 30, (x) => {
+    blob(x, 26, 15, 22, 11, 'rgba(120,220,160,.85)'); x.fillStyle = '#b0743c'; x.fillRect(48, 10, 10, 10); x.strokeStyle = OUT; x.lineWidth = 3; x.strokeRect(48, 10, 10, 10);
+    x.fillStyle = '#fff3d6'; x.fillRect(14, 10, 22, 10);
+  });
+  canvasTex(scene, 'box', 90, 70, (x) => {
+    x.fillStyle = OUT; x.fillRect(2, 8, 86, 60); x.fillStyle = '#a0682f'; x.fillRect(6, 12, 78, 52); x.fillStyle = '#ffd43b'; x.fillRect(16, 0, 58, 18); x.strokeStyle = OUT; x.lineWidth = 4; x.strokeRect(16, 0, 58, 18);
+  });
+  canvasTex(scene, 'well', 120, 110, (x) => {
+    blob(x, 60, 80, 50, 24, '#9a9488'); blob(x, 60, 74, 38, 16, '#1d3557', OUT, 3);
+    x.fillStyle = OUT; x.fillRect(16, 10, 8, 66); x.fillRect(96, 10, 8, 66); x.fillStyle = '#a0682f'; x.fillRect(10, 4, 100, 12); x.strokeRect(10, 4, 100, 12);
+  });
+  canvasTex(scene, 'house', 300, 230, (x) => {
+    x.fillStyle = OUT; x.fillRect(30, 90, 240, 136); x.fillStyle = '#b8b2a5'; x.fillRect(36, 96, 228, 126);
+    x.fillStyle = 'rgba(80,70,60,.4)'; for (let r = 0; r < 6; r++) for (let c = 0; c < 6; c++) x.fillRect(40 + c * 38 + (r % 2) * 18, 100 + r * 21, 32, 3);
+    x.beginPath(); x.moveTo(14, 96); x.lineTo(150, 8); x.lineTo(286, 96); x.closePath(); x.fillStyle = '#7a3b2e'; x.fill(); x.lineWidth = 6; x.strokeStyle = OUT; x.stroke();
+    x.fillStyle = OUT; x.fillRect(122, 150, 56, 76); x.fillStyle = '#5a3416'; x.fillRect(127, 155, 46, 71);
+    x.fillStyle = '#ffe9a0'; x.fillRect(64, 130, 34, 30); x.fillRect(202, 130, 34, 30);
+  });
+  canvasTex(scene, 'fence', 40, 60, (x) => { x.fillStyle = OUT; x.fillRect(14, 0, 12, 60); x.fillStyle = '#a0682f'; x.fillRect(16, 2, 8, 56); });
+  canvasTex(scene, 'palm', 150, 190, (x) => {
+    x.strokeStyle = OUT; x.lineWidth = 16; x.beginPath(); x.moveTo(78, 186); x.quadraticCurveTo(66, 110, 82, 60); x.stroke();
+    x.strokeStyle = '#a0682f'; x.lineWidth = 10; x.beginPath(); x.moveTo(78, 186); x.quadraticCurveTo(66, 110, 82, 60); x.stroke();
+    [[-1.1, 70], [-0.4, 74], [0.4, 74], [1.1, 70], [2.5, 60], [-2.5, 60]].forEach(([a, len]) => {
+      x.save(); x.translate(82, 60); x.rotate(a); x.beginPath(); x.ellipse(len / 2, 0, len / 2, 13, 0, 0, 7); x.fillStyle = '#3fbf6f'; x.fill(); x.lineWidth = 4; x.strokeStyle = OUT; x.stroke(); x.restore(); });
+  });
+  canvasTex(scene, 'boat', 200, 90, (x) => {
+    x.beginPath(); x.moveTo(6, 30); x.quadraticCurveTo(100, 100, 194, 30); x.closePath(); x.fillStyle = '#8a5a30'; x.fill(); x.lineWidth = 5; x.strokeStyle = OUT; x.stroke();
+    x.strokeStyle = 'rgba(43,26,10,.4)'; x.lineWidth = 3; x.beginPath(); x.moveTo(40, 44); x.lineTo(160, 44); x.stroke();
+  });
+  canvasTex(scene, 'pond', 220, 120, (x) => { blob(x, 110, 60, 104, 54, '#6fc3e8'); blob(x, 90, 50, 40, 14, 'rgba(255,255,255,.4)', null); });
+}
+// draw a loaded picture into a canvas, as big as fits, standing on the bottom; returns where it went
+function drawFit(x, scene, key, W2, H2) {
+  const src = scene.textures.get(key).getSourceImage(), f = Math.min(W2 / src.width, H2 / src.height), w = src.width * f, h = src.height * f;
+  const r = { x: (W2 - w) / 2, y: H2 - h, w, h };
+  x.drawImage(src, r.x, r.y, w, h);
+  return r;
+}
+// a band around a neck seen from the side (collar, scarf): a slightly curved strip with a shadow side and knitted lines
+function neckBand(x, tx, top, bx, bot, w, color) {
+  // from (tx, top) behind the head to (bx, bot) under the chin: a short slanted strip, a shadow side and knitted lines
+  x.lineJoin = 'round';
+  const path = () => { x.beginPath(); x.moveTo(tx - w / 2, top); x.quadraticCurveTo((tx + bx) / 2 - w * 0.2, (top + bot) / 2 + w * 0.3, bx - w / 2, bot); x.lineTo(bx + w / 2, bot); x.quadraticCurveTo((tx + bx) / 2 + w * 0.8, (top + bot) / 2, tx + w / 2, top); x.closePath(); };
+  x.fillStyle = color; path(); x.fill();
+  x.save(); path(); x.clip(); x.fillStyle = 'rgba(0,0,0,.2)'; x.beginPath(); x.moveTo(tx - w / 2, top); x.lineTo(bx - w / 2, bot); x.lineTo(bx - w * 0.1, bot); x.lineTo(tx - w * 0.1, top); x.fill();
+  x.strokeStyle = 'rgba(255,255,255,.5)'; x.lineWidth = 1.5;
+  for (let t = 0.12; t < 1; t += 0.16) { const cx = tx + (bx - tx) * t, cy = top + (bot - top) * t; x.beginPath(); x.moveTo(cx - w * 0.3, cy - 1); x.lineTo(cx + w * 0.3, cy + 1); x.stroke(); }
+  x.restore();
+  x.lineWidth = 2.5; x.strokeStyle = OUT; path(); x.stroke();
+}
+// a white picture coloured (keeps its shading): a new canvas
+function tinted(src, color, w, h) {
+  const c = document.createElement('canvas'); c.width = Math.ceil(w); c.height = Math.ceil(h);
+  const x = c.getContext('2d');
+  x.drawImage(src, 0, 0, w, h); x.globalCompositeOperation = 'multiply'; x.fillStyle = color; x.fillRect(0, 0, w, h);
+  x.globalCompositeOperation = 'destination-in'; x.drawImage(src, 0, 0, w, h);
+  return c;
+}
+// a sheep: big fluffy wool body, a head on the right, maybe a golden bell
+function sheepTex(scene, wool, head, bell) {
+  // the Nano Banana sheep, with the bell hanging under its neck
+  if (scene.textures.exists(`v_sheep_${wool}_${head}`)) return canvasTex(scene, `sheep_${wool}_${head}_${bell ? 1 : 0}`, 150, 110, (x) => {
+    const r = drawFit(x, scene, `v_sheep_${wool}_${head}`, 150, 110);
+    if (bell) {
+      // the neck is under the head: further right for the black-headed sheep (measured on the pictures)
+      const nx = r.x + r.w * (head === 'black' ? 0.79 : 0.67), top = r.y + r.h * 0.34, bot = r.y + r.h * 0.5, bw = r.w * 0.055;
+      neckBand(x, nx - r.w * 0.01, top, nx + r.w * 0.02, bot, bw, '#d93a3a');
+      if (scene.textures.exists('v_bell')) {   // the picture's bell without its collar ring (the lower part)
+        const b = scene.textures.get('v_bell').getSourceImage(), sy = b.height * 0.42, sh = b.height - sy, bh = r.h * 0.2, bwid = b.width * bh / sh;
+        x.drawImage(b, 0, sy, b.width, sh, nx + bw * 0.3 - bwid / 2, bot - bh * 0.15, bwid, bh);
+      } else blob(x, nx, bot + 6, 7, 7, '#ffd43b', OUT, 2);
+    }
+  });
+  return canvasTex(scene, `sheep_${wool}_${head}_${bell ? 1 : 0}`, 150, 110, (x) => {
+    const wc = wool === 'white' ? '#fbf8ef' : '#a9a9a9', hc = head === 'black' ? '#2b2b2b' : '#efe8da';
+    [[40, 92], [62, 96], [88, 96], [108, 92]].forEach(([lx, ly]) => { x.fillStyle = OUT; x.fillRect(lx - 5, ly - 26, 10, 26); });
+    [[30, 55], [48, 38], [72, 34], [94, 40], [104, 60], [84, 74], [56, 76], [34, 70]].forEach(([cx, cy]) => blob(x, cx, cy, 22, 20, wc, OUT, 3));
+    blob(x, 68, 56, 38, 26, wc, null);
+    blob(x, 126, 48, 18, 23, hc); blob(x, 117, 30, 9, 5, hc, OUT, 2); blob(x, 133, 44, 3, 3, head === 'black' ? '#fff' : OUT, null);
+    if (bell) { x.strokeStyle = '#e84545'; x.lineWidth = 5; x.beginPath(); x.moveTo(112, 58); x.lineTo(118, 72); x.stroke(); x.beginPath(); x.moveTo(113, 80); x.lineTo(104, 92); x.lineTo(124, 92); x.closePath(); x.fillStyle = '#ffd43b'; x.fill(); x.lineWidth = 3; x.strokeStyle = OUT; x.stroke(); blob(x, 114, 78, 7, 7, '#ffd43b', OUT, 3); blob(x, 114, 94, 3, 3, OUT, null); }
+  });
+}
+// a pig: pink, brown or spotted, maybe a scarf, sleeping / eating an apple / in the mud
+function pigTex(scene, color, scarf, act) {
+  // the Nano Banana pig, with the scarf (white in the picture) coloured and tied around its neck
+  if (scene.textures.exists(`v_pig_${color}_${act}`)) return canvasTex(scene, `pig_${color}_${scarf || 'none'}_${act}`, 170, 120, (x) => {
+    const r = drawFit(x, scene, `v_pig_${color}_${act}`, 170, 120);
+    if (scarf) {
+      // where the head meets the body (measured on the pictures): standing pigs and lying pigs
+      // [top x, top y, bottom x, bottom y]: from behind the ear down to under the chin
+      const [t0, f0, b0, f1] = act === 'sleep' ? [0.52, 0.46, 0.60, 0.80] : [0.50, 0.33, 0.60, 0.66];
+      const c = '#' + colorOf(scarf)[1].toString(16).padStart(6, '0'), tx = r.x + r.w * t0, top = r.y + r.h * f0, nx = r.x + r.w * b0, bot = r.y + r.h * f1, bw = r.w * 0.085;
+      neckBand(x, tx, top, nx, bot, bw, c);
+      // the knot in front, and two ends hanging down
+      x.lineJoin = 'round'; x.lineWidth = 2.5; x.strokeStyle = OUT;
+      [[-0.6, 1.0], [0.5, 0.85]].forEach(([dx, len]) => {
+        const x0 = nx + bw * 0.2, y0 = bot - bw * 0.2, x1 = x0 + dx * bw * 1.1, y1 = y0 + len * bw * 1.8;
+        x.beginPath(); x.moveTo(x0 - bw * 0.45, y0); x.lineTo(x1 - bw * 0.45, y1); x.lineTo(x1 + bw * 0.45, y1); x.lineTo(x0 + bw * 0.45, y0); x.closePath();
+        x.fillStyle = c; x.fill(); x.stroke();
+        x.beginPath(); for (let k = -1; k <= 1; k++) { x.moveTo(x1 + k * bw * 0.25, y1); x.lineTo(x1 + k * bw * 0.25, y1 + bw * 0.4); } x.stroke();
+      });
+      blob(x, nx + bw * 0.2, bot - bw * 0.15, bw * 0.55, bw * 0.45, c, OUT, 2.5);
+    }
+  });
+  return canvasTex(scene, `pig_${color}_${scarf || 'none'}_${act}`, 170, 120, (x) => {
+    if (act === 'mud') blob(x, 80, 98, 76, 18, '#6b4a2b', null);
+    const bc = color === 'brown' ? '#b0703f' : '#f7a6b8';
+    [[44, 96], [66, 98], [96, 98], [116, 96]].forEach(([lx, ly]) => { x.fillStyle = OUT; x.fillRect(lx - 6, ly - 24, 12, 24); x.fillStyle = bc; x.fillRect(lx - 3, ly - 22, 6, 20); });
+    blob(x, 80, 64, 56, 34, bc);
+    if (color === 'spotted') [[60, 52], [92, 70], [72, 80], [104, 50]].forEach(([sx, sy]) => blob(x, sx, sy, 10, 7, '#8a5a30', null));
+    blob(x, 134, 54, 26, 24, bc); blob(x, 128, 30, 8, 10, bc, OUT, 3);
+    blob(x, 156, 60, 10, 8, '#e88aa0', OUT, 3); blob(x, 153, 59, 1.6, 2.2, OUT, null); blob(x, 159, 59, 1.6, 2.2, OUT, null);
+    if (act === 'sleep') { x.strokeStyle = OUT; x.lineWidth = 3; x.beginPath(); x.moveTo(134, 48); x.lineTo(142, 48); x.stroke(); x.fillStyle = '#3b82f6'; x.font = '900 20px Nunito'; x.fillText('z z', 130, 22); }
+    else blob(x, 139, 47, 3.5, 3.5, OUT, null);
+    if (scarf) {   // a wide scarf around the neck with two ends hanging down
+      const c = '#' + colorOf(scarf)[1].toString(16).padStart(6, '0');
+      x.lineJoin = 'round';
+      const band = () => { x.beginPath(); x.moveTo(104, 34); x.quadraticCurveTo(118, 30, 124, 40); x.lineTo(122, 86); x.quadraticCurveTo(112, 92, 100, 86); x.closePath(); };
+      x.fillStyle = c; band(); x.fill(); x.lineWidth = 3; x.strokeStyle = OUT; x.stroke();
+      [[100, 80, 88, 108], [108, 82, 104, 112]].forEach(([a1, b1, a2, b2]) => { x.beginPath(); x.moveTo(a1, b1); x.lineTo(a2, b2); x.lineTo(a2 + 12, b2 + 2); x.lineTo(a1 + 12, b1); x.closePath(); x.fillStyle = c; x.fill(); x.stroke(); });
+      x.strokeStyle = 'rgba(255,255,255,.45)'; x.lineWidth = 3; x.beginPath(); x.moveTo(108, 44); x.lineTo(110, 80); x.stroke();
+    }
+    if (act === 'apple') { blob(x, 158, 82, 11, 11, '#e84545'); x.fillStyle = '#3fbf6f'; x.fillRect(157, 68, 4, 6); }
+    x.strokeStyle = OUT; x.lineWidth = 3; x.beginPath(); x.moveTo(24, 58); x.quadraticCurveTo(12, 50, 18, 42); x.stroke();
+  });
+}
+// a plant in the soil: flower on top, root under the ground
+function plantTex(scene, flower, root) {
+  const FC = { white: '#ffffff', yellow: '#ffd43b', red: '#e84545', purple: '#9b5de5' }, RC = { black: '#1a1a1a', brown: '#8a5a30', orange: '#ff8a1f' };
+  // the Nano Banana flower, with the (white) root coloured and drawn under the soil
+  if (scene.textures.exists('v_flower_' + flower)) return canvasTex(scene, `plant_${flower}_${root}`, 80, 140, (x) => {
+    if (scene.textures.exists('v_root')) { const src = scene.textures.get('v_root').getSourceImage(), h = 50, w = src.width * h / src.height; x.drawImage(tinted(src, root === 'black' ? '#3a3a3a' : RC[root], w, h), 40 - w / 2, 88, w, h); }
+    drawFit(x, scene, 'v_flower_' + flower, 80, 100);
+  });
+  return canvasTex(scene, `plant_${flower}_${root}`, 80, 140, (x) => {
+    blob(x, 40, 84, 36, 12, '#7a5230', OUT, 3);
+    x.strokeStyle = RC[root]; x.lineWidth = 6; x.lineCap = 'round';
+    [[40, 86, 40, 132], [40, 100, 24, 124], [40, 100, 58, 126]].forEach(([a, b, c, d]) => { x.beginPath(); x.moveTo(a, b); x.lineTo(c, d); x.stroke(); });
+    x.strokeStyle = '#3f8a3a'; x.lineWidth = 5; x.beginPath(); x.moveTo(40, 84); x.lineTo(40, 34); x.stroke();
+    blob(x, 30, 60, 10, 5, '#5fbf4a', OUT, 2); blob(x, 50, 52, 10, 5, '#5fbf4a', OUT, 2);
+    for (let k = 0; k < 6; k++) { const a = k / 6 * Math.PI * 2; blob(x, 40 + Math.cos(a) * 11, 26 + Math.sin(a) * 11, 9, 9, FC[flower], OUT, 2.5); }
+    blob(x, 40, 26, 6, 6, '#ffb000', OUT, 2);
+  });
+}
+
+// =====================================================================
+//  BOOT: load all the art once
+// =====================================================================
+class Boot extends Phaser.Scene {
+  constructor() { super('Boot'); }
+  preload() {
+    this.load.on('loaderror', () => {});
+    const img = (k, p) => { if (assetExists(p)) this.load.image(k, p); };
+    img('hero', 'assets/hero.png');
+    if (assetExists('assets/sprites/hero_walk.png')) this.load.spritesheet('hero_walk', 'assets/sprites/hero_walk.png', { frameWidth: 256, frameHeight: 256 });
+    ['man', 'woman', 'hat', 'hermes'].forEach(n => img('art_' + n, 'assets/hermes/' + n + '.png'));
+    img('art_cyclops', 'assets/olympus/cyclops.png'); img('art_harpy', 'assets/olympus/harpy.png');
+    ['athena', 'poseidon'].forEach(n => img('card_' + n, 'assets/cards/' + n + '.png'));
+    // the Voyage's own art (Nano Banana, art/prompts_voyage.md) when it exists
+    ['odysseus', 'circe', 'siren', 'scylla', 'ship', 'penelope'].forEach(n => img('art_' + n, 'assets/voyage/' + n + '.png'));
+    VOY_ISLANDS.flatMap(i => i[4]).forEach(id => { const p = 'assets/cards/' + id + '.png', f = CARD_ART_FALLBACK[id]; if (assetExists(p)) this.load.image('card_' + id, p); else if (f && assetExists(f)) this.load.image('card_' + id, f); });
+    // tiles and props replace the drawings with the same key (canvasTex() skips a key that already exists)
+    const V = 'assets/voyage/';
+    img('grass', 'assets/hermes/grass.png');   // Circe's island: the same grass as Hermes Express
+    [['sea', 'tile_sea'], ['darksea', 'tile_storm'], ['sand', 'tile_sand'], ['cave', 'tile_cave'], ['deck', 'tile_deck'], ['cliff', 'tile_cliff']].forEach(([k, f]) => img(k, V + f + '.jpg'));
+    ['rock', 'whirl', 'wave', 'bolt', 'bottle', 'box', 'well', 'house', 'palm', 'boat', 'pond', 'lotus'].forEach(k => img(k, V + k + '.png'));
+    ['fence', 'bell', 'boulder', 'scarf', 'root', 'cavemouth', 'soup', 'rock_bird', 'rock_tree', 'rock_flag', 'rock_shell',
+     'sheep_white_black', 'sheep_white_white', 'sheep_grey_black', 'sheep_grey_white',
+     ...['pink', 'brown', 'spotted'].flatMap(c => ['sleep', 'apple', 'mud'].map(a => `pig_${c}_${a}`)),
+     ...['white', 'yellow', 'red', 'purple'].map(c => 'flower_' + c), ...[1, 2, 3, 4].map(n => 'sailor_' + n),
+     ...['troy', 'lotus', 'cyclops', 'circe', 'sirens', 'strait', 'ithaca', 'smallrock'].map(n => 'isle_' + n)].forEach(k => img('v_' + k, V + k + '.png'));
+    ITEMS.forEach(([w]) => img(iconKey(w), iconFile(w)));
+    img(iconKey('tree'), iconFile('tree'));
+    Gear.preload(this);
+  }
+  create() { this.scene.start('Sea', { first: true }); }
+}
+
+// =====================================================================
+//  THE SEA: sail from island to island
+// =====================================================================
+const ISLES = [ // [x, y, radius] for each island on the map, then Troy (start) and Ithaca
+  [520, 1230, 150], [1000, 760, 170], [1560, 1200, 160], [1980, 760, 120], [1480, 330, 180], [2160, 260, 190],
+];
+class Sea extends Base {
+  constructor() { super('Sea'); }
+  create(data) {
+    const done = Voyage.done();
+    this.setup(2400, 1600, 'The Sea');
+    this.tile(1200, 800, 2400, 1600, 'sea');
+    this.drawIslands(done);
+    this.rocks = this.drawRocks();
+    // the ship starts next to the last island she finished (or at Troy)
+    const start = done === 0 || done >= 6 ? [230, 1430] : [ISLES[done - 1][0] + ISLES[done - 1][2] + 70, ISLES[done - 1][1] + 40];
+    this.ship = this.makeShip(start[0], start[1]);
+    this.physics.add.collider(this.ship, this.solids);
+    this.cameras.main.startFollow(this.ship, true, 0.1, 0.1);
+    this.bottle = null; this.quest = null;
+    const go = () => this.showMapNote();
+    if (data && data.first && done === 0) this.story(VOY_STORY.intro, go);
+    else if (data && data.from !== undefined && data.from < 5) this.story(VOY_LOG[data.from], () => { go(); this.dropBottle(); });
+    else go();
+    window.voyage = this;
+  }
+  showMapNote() {
+    const done = Voyage.done();
+    if (done >= 6) this.note('You are home! You can visit any island again.', 'הגעת הביתה! אפשר לבקר שוב בכל אי.', 'odysseus');
+    else this.note(VOY_ISLANDS[done][2], VOY_ISLANDS[done][3], 'odysseus');
+  }
+  drawIslands(done) {
+    this.solids = this.physics.add.staticGroup();
+    this.isles = [];
+    const g = this.add.graphics().setDepth(5);
+    const land = (x, y, r, green = true) => {
+      g.fillStyle(0x0d2a4a, 0.25).fillEllipse(x + 8, y + 14, r * 2.1, r * 1.5);
+      g.fillStyle(0xf1d9a4).fillEllipse(x, y, r * 2.1, r * 1.5).lineStyle(5, 0x2b1a0a).strokeEllipse(x, y, r * 2.1, r * 1.5);
+      if (green) g.fillStyle(0x8fcf6a).fillEllipse(x, y - 6, r * 1.6, r * 1.05);
+    };
+    const solid = (x, y, w, h) => { const z = this.add.zone(x, y, w, h); this.solids.add(z); };
+    // Troy (where the war was)
+    if (this.has('v_isle_troy')) this.fit(this.add.image(230, 1490, 'v_isle_troy'), 280, 280).setDepth(5); else land(230, 1500, 90, false);
+    this.add.text(230, 1580, 'Troy', { fontFamily: 'Cinzel', fontSize: 26, fontStyle: '900', color: '#fff8e6', stroke: '#2b1a0a', strokeThickness: 6 }).setOrigin(0.5).setDepth(6);
+    const ART = ['v_isle_lotus', 'v_isle_cyclops', 'v_isle_circe', 'v_isle_sirens', 'v_isle_strait', 'v_isle_ithaca'];
+    ISLES.forEach(([x, y, r], i) => {
+      if (this.has(ART[i])) {   // the Nano Banana island
+        const size = [380, 420, 400, 320, 480, 330][i], ix = i === 5 ? x + 60 : x, iy = i === 5 ? y - 40 : y;
+        this.fit(this.add.image(ix, iy, ART[i]), size, size).setDepth(5);
+        if (i === 4) [-105, 105].forEach(dx => solid(x + dx, y, 120, 300)); else if (i < 5) solid(x, y, size * 0.7, size * 0.5);
+        if (i === 5) { this.add.text(ix, iy + 120, 'Ithaca', { fontFamily: 'Cinzel', fontSize: 26, fontStyle: '900', color: '#fff8e6', stroke: '#2b1a0a', strokeThickness: 6 }).setOrigin(0.5).setDepth(9);
+          for (let k = 0; k < 9; k++) { const c = this.add.ellipse(x - 70 + (k % 3) * 70, y - 30 + Math.floor(k / 3) * 60, 170, 100, 0x3a3f4d, 0.88).setDepth(8); if (done >= 6) c.setVisible(false); this.tweens.add({ targets: c, x: c.x + 14, duration: 1800 + k * 120, yoyo: true, repeat: -1, ease: 'Sine.inOut' }); } }
+      }
+      else if (i === 0) { land(x, y, r); for (let k = 0; k < 14; k++) this.add.image(x + Math.cos(k * 2.4) * r * 0.55 * ((k % 3) / 3 + 0.4), y + Math.sin(k * 2.4) * r * 0.4 * ((k % 3) / 3 + 0.4) - 6, 'lotus').setDepth(6).setScale(0.8); solid(x, y, r * 1.6, r); }
+      else if (i === 1) { land(x, y, r); g.fillStyle(0x7a7064).fillTriangle(x - 130, y + 40, x, y - 150, x + 130, y + 40).lineStyle(5, 0x2b1a0a).strokeTriangle(x - 130, y + 40, x, y - 150, x + 130, y + 40); g.fillStyle(0x1a1410).fillEllipse(x, y + 20, 90, 70); solid(x, y, r * 1.6, r); }
+      else if (i === 2) { land(x, y, r); this.add.image(x, y - 30, 'house').setScale(0.55).setDepth(6); [-110, 110].forEach(dx => this.add.image(x + dx, y - 10, iconKey('tree')).setScale(0.35).setDepth(6)); solid(x, y, r * 1.6, r); }
+      else if (i === 3) { [[-60, 0], [50, -40], [40, 50]].forEach(([dx, dy]) => { this.add.image(x + dx, y + dy, 'rock').setScale(0.75).setDepth(6); solid(x + dx, y + dy, 90, 60); });
+        this.add.text(x, y - 90, '♪ ♫ ♪', { fontSize: 34, color: '#ffc2e2', stroke: '#5a1040', strokeThickness: 5 }).setOrigin(0.5).setDepth(7); }
+      else if (i === 4) { [-170, 170].forEach(dx => { g.fillStyle(0x6e5a50).fillRoundedRect(x + dx - 90, y - 170, 180, 340, 30).lineStyle(6, 0x2b1a0a).strokeRoundedRect(x + dx - 90, y - 170, 180, 340, 30); g.fillStyle(0x8a7568).fillRoundedRect(x + dx - 70, y - 160, 70, 310, 20); solid(x + dx, y, 170, 330); }); }
+      else if (i === 5) { land(x + 60, y - 40, 110); this.add.text(x + 60, y + 50, 'Ithaca', { fontFamily: 'Cinzel', fontSize: 26, fontStyle: '900', color: '#fff8e6', stroke: '#2b1a0a', strokeThickness: 6 }).setOrigin(0.5).setDepth(9);
+        for (let k = 0; k < 9; k++) { const c = this.add.ellipse(x - 70 + (k % 3) * 70, y - 30 + Math.floor(k / 3) * 60, 170, 100, 0x3a3f4d, 0.88).setDepth(8); this.tweens.add({ targets: c, x: c.x + 14, duration: 1800 + k * 120, yoyo: true, repeat: -1, ease: 'Sine.inOut' }); }
+        if (done >= 6) this.children.list.filter(o => o.type === 'Ellipse' && o.depth === 8).forEach(o => o.setVisible(false)); }
+      if (i < done) this.add.text(x, y - r * 0.75 - 20, '✓', { fontSize: 40, color: '#3fbf6f', stroke: '#fff', strokeThickness: 6 }).setOrigin(0.5).setDepth(9);
+      this.isles.push({ i, x, y, r });
+    });
+  }
+  // little rocks with something on them (for the messages in bottles)
+  drawRocks() {
+    const spots = [[760, 1450, 'bird'], [1260, 980, 'tree'], [700, 560, 'flag'], [1900, 1380, 'shell'], [1250, 1450, 'bird'], [1820, 1000, 'flag'], [2250, 1100, 'tree'], [400, 900, 'shell']];
+    // the same thing twice would make the bottle note fit two rocks: keep only the first of each
+    const seen = {}, rocks = [];
+    spots.forEach(([x, y, f]) => {
+      rocks.push({ x, y, f: seen[f] ? 'plain' : f });
+      if (!seen[f] && this.has('v_rock_' + f)) { this.add.image(x, y - 20, 'v_rock_' + f).setScale(0.9).setDepth(6); seen[f] = true; return; }
+      this.add.image(x, y, 'rock').setScale(0.45).setDepth(6);
+      if (!seen[f]) {
+        if (f === 'bird') this.add.text(x + 4, y - 34, '🐦', { fontSize: 30 }).setOrigin(0.5).setDepth(7);
+        if (f === 'tree' && this.has(iconKey('tree'))) this.add.image(x, y - 40, iconKey('tree')).setScale(0.22).setDepth(7);
+        if (f === 'flag') { const g = this.add.graphics().setDepth(7); g.fillStyle(0x2b1a0a).fillRect(x - 2, y - 70, 5, 50).fillStyle(0xe84545).fillTriangle(x + 3, y - 70, x + 34, y - 60, x + 3, y - 50); }
+        if (f === 'shell') this.add.text(x + 6, y - 28, '🐚', { fontSize: 28 }).setOrigin(0.5).setDepth(7);
+      }
+      seen[f] = true;
+    });
+    return rocks;
+  }
+  // after an island: a bottle with a message floats near the ship
+  dropBottle() {
+    const r = pick(VOY_ROCKS);
+    this.bottle = this.add.image(this.ship.x + 160, this.ship.y - 120, 'bottle').setDepth(20);
+    this.tweens.add({ targets: this.bottle, y: this.bottle.y - 8, angle: 8, duration: 900, yoyo: true, repeat: -1, ease: 'Sine.inOut' });
+    this.bottle.quest = r;
+  }
+  update(time, delta) {
+    if (this.baseUpdate()) { this.ship.setVelocity(0, 0); return; }
+    const k = this.keys;
+    let vx = 0, vy = 0;
+    if (k.left.isDown || k.a.isDown) vx -= 1; if (k.right.isDown || k.d.isDown) vx += 1;
+    if (k.up.isDown || k.w.isDown) vy -= 1; if (k.down.isDown || k.s.isDown) vy += 1;
+    const len = Math.hypot(vx, vy) || 1;
+    this.ship.setVelocity(vx / len * 250, vy / len * 250);
+    if (vx || vy) { const target = Math.atan2(vy, vx) * 180 / Math.PI + 90; this.ship.angle += Phaser.Math.Angle.ShortestBetween(this.ship.angle, target) * 0.15; }
+    // the bottle
+    if (this.bottle && Phaser.Math.Distance.Between(this.ship.x, this.ship.y, this.bottle.x, this.bottle.y) < 70) {
+      this.quest = this.bottle.quest; this.bottle.destroy(); this.bottle = null; sfx.splash();
+      this.note2(this.quest[1], 'bottle');
+    }
+    // the gold rocks
+    if (this.quest) for (const r of this.rocks) {
+      if (Phaser.Math.Distance.Between(this.ship.x, this.ship.y, r.x, r.y) < 110 && !r.tried) {
+        r.tried = true; this.time.delayedCall(1500, () => r.tried = false);
+        if (r.f === this.quest[0]) { this.floatText('You found the gold!', r.x, r.y - 60, '#ffe066', 32); this.addCoins(10, r.x, r.y); this.quest = null; this.note2(null); }
+        else this.floatText('No gold here. Read the message again.', r.x, r.y - 60, '#fff8e6', 24);
+      }
+    }
+    // islands
+    let near = null;
+    for (const isl of this.isles) if (Phaser.Math.Distance.Between(this.ship.x, this.ship.y, isl.x, isl.y) < isl.r + 110) near = isl;
+    this.tip.setVisible(!!near); if (near) this.tip.setPosition(this.ship.x, this.ship.y - 100);
+    if (near && Phaser.Input.Keyboard.JustDown(k.space)) this.dock(near.i);
+  }
+  dock(i) {
+    const done = Voyage.done();
+    if (i === done || done >= 6) { this.cameras.main.fadeOut(400); this.time.delayedCall(450, () => this.scene.start(VOY_ISLANDS[i][0])); }
+    else if (i < done) this.floatText('You were here already!', this.ship.x, this.ship.y - 120, '#fff8e6', 28);
+    else this.miss('Not this island! Read again.', this.ship.x, this.ship.y - 120, false);
+  }
+}
+
+// =====================================================================
+//  1. THE LOTUS ISLAND: find the sailors from their description; do not step on the lotus flowers
+// =====================================================================
+const LOTUS_LM = [['big rock', 'הסלע הגדול', 'rock', 300, 300], ['palm tree', 'עץ הדקל', 'palm', 980, 270], ['pond', 'הבריכה', 'pond', 330, 540], ['old boat', 'הסירה הישנה', 'boat', 960, 560]];
+class Lotus extends Base {
+  constructor() { super('Lotus'); }
+  create() {
+    this.setup(W, H, 'The Lotus Island');
+    this.tile(W / 2, H / 2, W, H, 'sand');
+    this.tile(W / 2, H - 30, W, 60, 'sea').setDepth(1);
+    this.add.image(W / 2, H - 50, 'ship').setAngle(90).setDepth(2);
+    LOTUS_LM.forEach(([, , tex, x, y]) => this.add.image(x, y, tex).setDepth(y + 30).setScale(tex === 'palm' ? 0.9 : 0.85));
+    this.makeSailors();
+    this.makeHero(W / 2, H - 140);
+    this.round = 0;
+    this.story(VOY_STORY.Lotus, () => this.nextRound());
+    window.voyage = this;
+  }
+  makeSailors() {
+    for (let tries = 0; tries < 400; tries++) {
+      const hats = shuffle(COLORS.map(c => c[0])), lms = shuffle([0, 1, 2, 3, pick([0, 1, 2, 3])]);
+      const sailors = lms.map((lm, n) => ({ hat: hats[n], item: pick(ITEMS)[0], lm }));
+      // the rounds must each find exactly one sailor
+      const plan = [], left = sailors.slice();
+      let ok = true;
+      for (let r = 0; r < 5 && ok; r++) {
+        const t = this.task(r, left); if (!t) ok = false; else { plan.push(t); left.splice(left.indexOf(t.target), 1); }
+      }
+      if (!ok) continue;
+      this.plan = plan;
+      const used = {};
+      sailors.forEach(s => {
+        const L = LOTUS_LM[s.lm], side = used[s.lm] ? 1 : -1; used[s.lm] = true;
+        const sx = L[3] + side * 120, sy = L[4] + 40;
+        Object.assign(s, this.sailor(sx, sy, s.hat, s.item));
+      });
+      this.sailors = sailors;
+      sailors.forEach(sl => this.roam(sl, 60, 35));
+      // lotus patches, not too close to anything
+      this.patches = [];
+      for (let k = 0; k < 600 && this.patches.length < 16; k++) {
+        const x = Phaser.Math.Between(120, W - 120), y = Phaser.Math.Between(220, H - 150);
+        const far = (px, py, d) => Phaser.Math.Distance.Between(x, y, px, py) > d;
+        if (sailors.every(s => far(s.x, s.y + 30, 95)) && LOTUS_LM.every(l => far(l[3], l[4], 115)) && far(W / 2, H - 140, 130) && this.patches.every(p => far(p.x, p.y, 90)))
+          this.patches.push(this.add.image(x, y, 'lotus').setDepth(y));
+      }
+      return;
+    }
+  }
+  // the note for each round; keys must point at exactly one sailor
+  task(r, left) {
+    const T = [
+      { keys: ['hat'], en: s => `Find the sailor with the ${s.hat} hat.`, he: s => `מצאי את המלח עם הכובע ${colorOf(s.hat)[3]}.` },
+      { keys: ['item'], en: s => `Find the sailor with ${aAn(s.item)}.`, he: s => `מצאי את המלח עם ה${ITEMS.find(i => i[0] === s.item)[1]}.` },
+      { keys: ['hat', 'item'], en: s => `Find the sailor with ${aAn(s.hat)} hat and ${aAn(s.item)}.`, he: s => `מצאי את המלח עם כובע ${colorOf(s.hat)[3].slice(1)} ו${ITEMS.find(i => i[0] === s.item)[1]}.` },
+      { keys: ['lm'], en: s => `Find the sailor next to the ${LOTUS_LM[s.lm][0]}.`, he: s => `מצאי את המלח שליד ${LOTUS_LM[s.lm][1]}.` },
+      { keys: ['lm', 'item'], en: s => `This sailor sits next to the ${LOTUS_LM[s.lm][0]}. He has ${aAn(s.item)}.`, he: s => `המלח הזה יושב ליד ${LOTUS_LM[s.lm][1]}. יש לו ${ITEMS.find(i => i[0] === s.item)[1]}.` },
+    ];
+    const tpl = T[r];
+    const fits = shuffle(left).filter(s => left.filter(o => tpl.keys.every(k => o[k] === s[k])).length === 1);
+    if (!fits.length) return null;
+    const s = fits[0];
+    return { target: s, en: tpl.en(s), he: tpl.he(s) };
+  }
+  nextRound() {
+    if (this.round >= 5) return this.story(VOY_STORY.LotusEnd, () => this.finishIsland(0));
+    const t = this.plan[this.round];
+    this.note(t.en, t.he, 'odysseus');
+  }
+  use(s) {
+    const t = this.plan[this.round];
+    if (s === t.target) {
+      sfx.good(); s.gone = true; this.tip.setVisible(false); if (s.roamTween) s.roamTween.stop();
+      this.floatText(this.cur.mistakes ? 'Thank you!' : 'Perfect! Thank you!', s.x, s.y - 70, '#ffe066', 30);
+      this.addCoins(this.cur.mistakes ? 2 : 4, s.x, s.y - 40);
+      this.tweens.add({ targets: [...s.parts], x: `+=${W / 2 - s.x}`, y: `+=${H - 60 - s.y}`, alpha: 0, duration: 1100, ease: 'Quad.in' });
+      s.shade.destroy();
+      this.round++; this.time.delayedCall(900, () => this.nextRound());
+    } else {
+      this.floatText('Lotus... so sweet...', s.x, s.y - 70, '#ffb3d9', 24);
+      this.miss('Not this sailor! Read again.');
+    }
+  }
+  update() {
+    const busy = this.baseUpdate();
+    this.moveHero(!busy);
+    if (busy) return;
+    this.heroSlow = Math.max(0, this.heroSlow - this.game.loop.delta / 1000);
+    // the lotus flowers make you forget: she gets slow and dizzy for a moment
+    for (const p of this.patches) if (this.heroSlow <= 0 && Phaser.Math.Distance.Between(p.x, p.y, this.player.x, this.player.y + 10) < 38) {
+      this.heroSlow = 2.5; this.heroDizzy = true; sfx.wrong(); this.floatText('Do not eat the flowers!', this.player.x, this.player.y - 100, '#ffb3d9', 26);
+      this.tweens.add({ targets: this.heroImg, angle: { from: -12, to: 12 }, duration: 220, yoyo: true, repeat: 4, onComplete: () => this.heroImg.setAngle(0) });
+    }
+    const n = this.nearest(this.sailors);
+    if (n && Phaser.Input.Keyboard.JustDown(this.keys.space)) this.use(n);
+  }
+}
+
+// =====================================================================
+//  2. THE CYCLOPS CAVE: say your name is "Nobody", then hide under the right sheep
+// =====================================================================
+class Cyclops extends Base {
+  constructor() { super('Cyclops'); }
+  create() {
+    this.setup(W, H, 'The Cyclops Cave');
+    this.add.rectangle(W / 2, H / 2, W, H, 0x1a1410);
+    this.tile(W / 2, H / 2 + 40, W - 120, H - 120, 'cave').setDepth(1);
+    const g = this.add.graphics().setDepth(2);
+    g.lineStyle(26, 0x2a2018).strokeRoundedRect(70, 120, W - 140, H - 150, 60);
+    // the way out (top), with the Cyclops sitting next to it
+    this.exit = { x: W / 2, y: 150 };
+    this.add.rectangle(W / 2, 140, 170, 70, 0xdff4ff).setDepth(3);
+    if (this.has('v_boulder')) this.add.image(W / 2 - 170, 175, 'v_boulder').setScale(0.55).setDepth(4);
+    this.cyc = this.pic(['art_cyclops'], '👁️', W / 2 + 230, 240, 190).setDepth(400);
+    if (this.cyc.setFlipX) this.cyc.setFlipX(true);
+    // the sailors wait in the corner
+    this.waiting = [0, 1, 2].map(n => this.sailor(170 + n * 70, 610, COLORS[n * 2][0]));
+    this.makeSheep();
+    this.makeHero(320, 540);
+    this.round = 0;
+    // the Cyclops sleeps, wakes up and looks around: 'sleep' -> 'wake' (a warning) -> 'watch'
+    this.eye = { state: 'sleep', t: 5000 };
+    this.zzz = this.add.text(this.cyc.x + 95, this.cyc.y - 70, 'z z z', { fontFamily: 'Nunito', fontSize: 30, fontStyle: '900', color: '#9bd8ff', stroke: '#1a1410', strokeThickness: 5 }).setDepth(2000).setVisible(false);
+    this.look = this.add.text(this.cyc.x - 10, this.cyc.y + 108, '👁️  He is watching! Do not move!', { fontFamily: 'Nunito', fontSize: 26, fontStyle: '900', color: '#ffe066', stroke: '#1a1410', strokeThickness: 6 }).setOrigin(0.5).setDepth(2000).setVisible(false);
+    window.voyage = this;
+    this.story(VOY_STORY.Cyclops1, () => this.askName());
+  }
+  askName() {
+    this.choice('What is your name, little one?', 'cyclops', ['My name is Odysseus.', 'My name is Nobody.', 'My name is Zeus.'], i => {
+      if (i === 1) { sfx.good(); this.clearNote(); this.story(VOY_STORY.Cyclops2, () => this.nextRound()); return; }
+      this.floatText(i === 0 ? 'Odysseus? I know that name! Grrr!' : 'Zeus? Ha ha! You are too small!', W / 2, H / 2, '#ffb3b3', 32, true);
+      // the help: what Odysseus whispered, as a note (with 🔊 / Hebrew after mistakes)
+      if (!this.cur) this.note('Psst! If he asks your name, say "Nobody".', 'פססט! אם הוא שואל איך קוראים לך, תגידי "אף אחד".', 'odysseus');
+      this.miss();
+      this.time.delayedCall(1500, () => this.askName());
+    });
+  }
+  makeSheep() {
+    const props = () => ({ size: Math.random() < 0.6 ? 'big' : 'small', wool: pick(['white', 'grey']), head: pick(['black', 'white']), bell: Math.random() < 0.35 });
+    const T = this.T = [
+      { keys: ['bell'], test: s => s.bell, en: s => 'Hide a sailor under the big sheep with a bell.', he: s => 'החביאי מלח מתחת לכבשה הגדולה עם הפעמון.' },
+      { keys: ['head'], en: s => `Hide the next sailor under the big sheep with a ${s.head} head.`, he: s => `החביאי את המלח הבא מתחת לכבשה הגדולה עם הראש ה${s.head === 'black' ? 'שחור' : 'לבן'}.` },
+      { keys: ['wool'], en: s => `This big sheep has ${s.wool} wool. Hide a sailor under it.`, he: s => `לכבשה הגדולה הזאת יש צמר ${s.wool === 'white' ? 'לבן' : 'אפור'}. החביאי מלח מתחתיה.` },
+      { keys: ['wool', 'head'], en: s => `Now it is your turn! Hide under the big ${s.wool} sheep with a ${s.head} head.`, he: s => `עכשיו תורך! התחבאי מתחת לכבשה הגדולה ה${s.wool === 'white' ? 'לבנה' : 'אפורה'} עם הראש ה${s.head === 'black' ? 'שחור' : 'לבן'}.` },
+    ];
+    for (let tries = 0; tries < 2000; tries++) {
+      const flock = Array.from({ length: 8 }, props);
+      const left = flock.slice(), plan = [];
+      for (let r = 0; r < 4; r++) {
+        const tpl = T[r];
+        const big = left.filter(s => s.size === 'big' && (!tpl.test || tpl.test(s)));
+        const fits = big.filter(s => left.filter(o => o.size === 'big' && tpl.keys.every(k => o[k] === s[k])).length === 1);
+        if (!fits.length) break;
+        const s = pick(fits); plan.push({ target: s, en: tpl.en(s), he: tpl.he(s) }); left.splice(left.indexOf(s), 1);
+      }
+      if (plan.length < 4) continue;
+      this.plan = plan; this.flock = flock;
+      flock.forEach((s, n) => {
+        s.x = 230 + (n % 4) * 230 + Phaser.Math.Between(-30, 30); s.y = 400 + Math.floor(n / 4) * 160 + Phaser.Math.Between(-15, 15);
+        s.img = this.add.image(s.x, s.y, sheepTex(this, s.wool, s.head, s.bell)).setScale(s.size === 'big' ? 0.95 : 0.6).setDepth(s.y + 30);
+        s.spot = { x: s.x, y: s.y + 40 }; s.tipUp = 100;
+        this.wander(s);
+      });
+      return;
+    }
+  }
+  wander(s) {
+    if (s.gone || s.busy) return;
+    const nx = Phaser.Math.Clamp(s.x + Phaser.Math.Between(-90, 90), 380, W - 160), ny = Phaser.Math.Clamp(s.y + Phaser.Math.Between(-40, 40), 380, 600);
+    s.img.setFlipX(nx < s.x);
+    this.tweens.add({ targets: s, x: nx, y: ny, duration: 1500, delay: Phaser.Math.Between(200, 1500), ease: 'Sine.inOut',
+      onUpdate: () => { s.img.setPosition(s.x, s.y).setDepth(s.y + 30); s.spot.x = s.x; s.spot.y = s.y + 40; }, onComplete: () => this.wander(s) });
+  }
+  nextRound() {
+    if (this.round >= 4) return;
+    const t = this.plan[this.round];
+    this.note(t.en, t.he, 'odysseus');
+  }
+  use(s) {
+    const t = this.plan[this.round];
+    if (s !== t.target) return this.miss(s.size === 'small' ? 'This sheep is too small!' : 'Not this sheep! Read again.');
+    sfx.good(); this.tip.setVisible(false); this.busyStory = true;
+    this.tweens.killTweensOf(s); s.busy = true; s.gone = true;
+    this.addCoins(this.cur.mistakes ? 2 : 4, s.x, s.y - 40);
+    const last = this.round === 3;
+    const hider = last ? null : this.waiting.shift();
+    const walkOut = () => {
+      s.img.setFlipX(false);
+      this.tweens.add({ targets: s, x: this.exit.x, y: this.exit.y + 60, duration: 1600, onUpdate: () => s.img.setPosition(s.x, s.y).setDepth(s.y + 30), onComplete: () => {
+        this.tweens.add({ targets: this.cyc, angle: { from: -6, to: 6 }, duration: 160, yoyo: true, repeat: 2 });
+        this.floatText('Hmm... just my sheep.', this.cyc.x, this.cyc.y - 140, '#fff8e6', 26);
+        this.tweens.add({ targets: s.img, y: this.exit.y - 40, alpha: 0, duration: 700, delay: 600, onComplete: () => {
+          this.round++; this.busyStory = false;
+          if (last) this.story(VOY_STORY.CyclopsEnd, () => this.finishIsland(1)); else this.nextRound();
+        } });
+      } });
+    };
+    if (last) { this.heroImg.setVisible(false); this.heroShade.setVisible(false); this.player.body.enable = false; this.time.delayedCall(300, walkOut); }
+    else this.tweens.add({ targets: hider.parts, x: `+=${s.x - hider.x}`, y: `+=${s.y - hider.y}`, alpha: 0, duration: 800, onComplete: () => { hider.shade.destroy(); walkOut(); } });
+  }
+  // the Cyclops' eyes: asleep (move!), waking (get ready to stop), watching (stand still)
+  watchCyclops(dt) {
+    const e = this.eye;
+    e.t -= dt;
+    const show = st => { this.zzz.setVisible(st === 'sleep'); this.look.setVisible(st !== 'sleep'); if (this.cyc.setTint) st === 'sleep' ? this.cyc.setTint(0x9a9aa8) : this.cyc.clearTint(); };
+    if (e.state === 'sleep' && e.t <= 0) { e.state = 'wake'; e.t = 1300; show('wake'); this.look.setText('The Cyclops is waking up!'); tone(200, 260, .3, 'sawtooth', .05); this.tweens.add({ targets: this.cyc, angle: { from: -4, to: 4 }, duration: 120, yoyo: true, repeat: 3 }); }
+    else if (e.state === 'wake' && e.t <= 0) { e.state = 'watch'; e.t = Phaser.Math.Between(2200, 3400); this.look.setText('👁️  He is watching! Do not move!'); }
+    else if (e.state === 'watch') {
+      const moving = Math.hypot(this.player.body.velocity.x, this.player.body.velocity.y) > 20;
+      if (moving && this.heroImg.visible) {   // seen! back to the corner (not a reading mistake)
+        sfx.wrong(); this.cameras.main.shake(180, 0.006);
+        this.floatText('I see you! Back to the corner!', this.cyc.x - 40, this.cyc.y + 150, '#ffb3b3', 28);
+        this.poof(this.player.x, this.player.y - 30); this.player.setPosition(320, 600); this.player.setVelocity(0, 0);
+        e.state = 'sleep'; e.t = Phaser.Math.Between(3500, 5500); show('sleep');
+      } else if (e.t <= 0) { e.state = 'sleep'; e.t = Phaser.Math.Between(4000, 6500); show('sleep'); }
+    }
+    if (e.state === 'sleep') this.zzz.setAlpha(0.5 + Math.sin(this.time.now / 300) * 0.5);
+  }
+  update(time, delta) {
+    const busy = this.baseUpdate();
+    this.moveHero(!busy && this.heroImg.visible);
+    if (!busy && this.plan && this.cur && this.round < 4) this.watchCyclops(delta); else { this.zzz.setVisible(false); this.look.setVisible(false); }
+    if (busy || this.round >= 4 || !this.plan || this.cur === null) { if (busy) this.tip.setVisible(false); return; }
+    const n = this.nearest(this.flock, 90);
+    if (n && Phaser.Input.Keyboard.JustDown(this.keys.space)) this.use(n);
+  }
+}
+
+// =====================================================================
+//  3. CIRCE'S ISLAND: find the moly flower, then find each sailor among the pigs
+// =====================================================================
+const CIRCE_LM = [['old well', 'הבאר הישנה', 'well', 220, 430], ['big tree', 'העץ הגדול', 'tree', 470, 300], ['big rock', 'הסלע הגדול', 'rock', 640, 520]];
+const PIG_NAMES = [['Elpenor', 'אלפנור'], ['Polites', 'פוליטס'], ['Eurylochus', 'אוריולוכוס'], ['Perimedes', 'פרימדס'], ['Baius', 'באיוס']];
+const PIG_ACT = { sleep: ['sleeping', 'ישן'], apple: ['eating an apple', 'אוכל תפוח'], mud: ['in the mud', 'בבוץ'] };
+const PIG_COLOR = { pink: ['pink', 'ורוד'], brown: ['brown', 'חום'], spotted: ['spotted', 'מנוקד'] };
+class Circe extends Base {
+  constructor() { super('Circe'); }
+  create() {
+    this.setup(W, H, "Circe's Island");
+    this.tile(W / 2, H / 2, W, H, 'grass');
+    this.add.image(170, 210, 'house').setScale(0.7).setDepth(250);
+    CIRCE_LM.forEach(([, , tex, x, y]) => {
+      if (tex === 'tree') this.pic([iconKey('tree')], '🌳', x, y, 170).setDepth(y + 40);
+      else this.add.image(x, y, tex).setScale(tex === 'rock' ? 0.8 : 0.9).setDepth(y + 30);
+    });
+    // the pig pen (right side)
+    this.pen = { x: 800, y: 230, w: 440, h: 450 };
+    this.add.rectangle(this.pen.x + this.pen.w / 2, this.pen.y + this.pen.h / 2, this.pen.w, this.pen.h, 0xb08a5a, 0.55).setDepth(2);
+    if (this.has('v_fence')) for (let x = this.pen.x + 50; x <= this.pen.x + this.pen.w; x += 100) { this.add.image(x, this.pen.y - 10, 'v_fence').setDepth(this.pen.y); this.add.image(x, this.pen.y + this.pen.h - 10, 'v_fence').setDepth(this.pen.y + this.pen.h); }
+    else for (let x = this.pen.x; x <= this.pen.x + this.pen.w; x += 40) { this.add.image(x, this.pen.y, 'fence').setDepth(this.pen.y); this.add.image(x, this.pen.y + this.pen.h, 'fence').setDepth(this.pen.y + this.pen.h); }
+    for (let y = this.pen.y; y <= this.pen.y + this.pen.h; y += 50) if (y < this.pen.y + 180 || y > this.pen.y + 280) this.add.image(this.pen.x, y, 'fence').setDepth(y);
+    for (let y = this.pen.y; y <= this.pen.y + this.pen.h; y += 50) this.add.image(this.pen.x + this.pen.w, y, 'fence').setDepth(y);
+    this.makePlants(); this.makePigs();
+    this.makeHero(560, 650);
+    this.phase = 'story'; this.round = 0;
+    window.voyage = this;
+    this.story(VOY_STORY.Circe1, () => { this.phase = 'moly'; this.note(this.molyNote.en, this.molyNote.he, 'hermes'); });
+  }
+  makePlants() {
+    const lmT = pick([0, 1, 2]), lmO = pick([0, 1, 2].filter(i => i !== lmT));
+    const others = () => { for (;;) { const f = pick(['white', 'yellow', 'red', 'purple']), r = pick(['black', 'brown', 'orange']); if (!(f === 'white' && r === 'black')) return [f, r]; } };
+    const list = [];
+    [0, 1, 2].forEach(lm => [-1, 1].forEach(side => list.push({ lm, side })));
+    // one moly next to the right place; one more white flower with a black root somewhere else (so the place matters)
+    list.forEach(p => { [p.flower, p.root] = others(); });
+    const t = list.find(p => p.lm === lmT), o = list.find(p => p.lm === lmO);
+    [t.flower, t.root, o.flower, o.root] = ['white', 'black', 'white', 'black'];
+    this.plants = list.map(p => {
+      const L = CIRCE_LM[p.lm], x = L[3] + p.side * 90, y = L[4] + 70;
+      p.img = this.add.image(x, y, plantTex(this, p.flower, p.root)).setScale(0.8).setDepth(y + 20);
+      p.x = x; p.y = y; p.spot = { x, y: y + 50 }; p.tipUp = 90;
+      return p;
+    });
+    this.moly = t;
+    const L = CIRCE_LM[lmT];
+    this.molyNote = { en: `Find the white flower with a black root. It grows next to the ${L[0]}.`, he: `מצאי את הפרח הלבן עם השורש השחור. הוא גדל ליד ${L[1]}.` };
+  }
+  makePigs() {
+    const T = this.T = [
+      { keys: ['scarf'], need: s => s.scarf, en: (s, n) => `${n[0]} is a pig now. He has ${aAn(s.scarf)} scarf.`, he: (s, n) => `${n[1]} הוא חזיר עכשיו. יש לו צעיף ${colorOf(s.scarf)[3].slice(1)}.` },
+      { keys: ['size', 'color'], en: (s, n) => `${n[0]} is a ${s.size} ${PIG_COLOR[s.color][0]} pig.`, he: (s, n) => `${n[1]} הוא חזיר ${s.size === 'big' ? 'גדול' : 'קטן'} ${PIG_COLOR[s.color][1]}.` },
+      { keys: ['act', 'scarf'], need: s => s.scarf, en: (s, n) => `${n[0]} is ${PIG_ACT[s.act][0]}. He has ${aAn(s.scarf)} scarf.`, he: (s, n) => `${n[1]} ${PIG_ACT[s.act][1]}. יש לו צעיף ${colorOf(s.scarf)[3].slice(1)}.` },
+      { keys: ['size', 'act'], en: (s, n) => `Find the ${s.size} pig. It is ${PIG_ACT[s.act][0]}.`, he: (s, n) => `מצאי את החזיר ה${s.size === 'big' ? 'גדול' : 'קטן'}. הוא ${PIG_ACT[s.act][1]}.` },
+      { keys: ['color', 'act'], en: (s, n) => `${n[0]} is ${PIG_ACT[s.act][0]}. He is a ${PIG_COLOR[s.color][0]} pig.`, he: (s, n) => `${n[1]} ${PIG_ACT[s.act][1]}. הוא חזיר ${PIG_COLOR[s.color][1]}.` },
+    ];
+    const props = () => ({ size: pick(['big', 'small']), color: pick(['pink', 'brown', 'spotted']), scarf: Math.random() < 0.7 ? pick(COLORS)[0] : null, act: pick(['sleep', 'apple', 'mud']) });
+    for (let tries = 0; tries < 3000; tries++) {
+      const pigs = Array.from({ length: 5 }, props), left = pigs.slice(), plan = [];
+      for (let r = 0; r < 5; r++) {
+        const tpl = T[r];
+        const fits = left.filter(s => (!tpl.need || tpl.need(s)) && left.filter(o => tpl.keys.every(k => o[k] === s[k])).length === 1);
+        if (!fits.length) break;
+        const s = pick(fits); plan.push({ target: s, name: PIG_NAMES[r], tpl }); left.splice(left.indexOf(s), 1);
+      }
+      if (plan.length < 5) continue;
+      this.plan = plan.map(p => ({ target: p.target, en: p.tpl.en(p.target, p.name), he: p.tpl.he(p.target, p.name) }));
+      const slots = shuffle([[870, 330], [1010, 310], [1150, 350], [920, 520], [1100, 560]]);
+      this.pigs = pigs.map((s, n) => {
+        [s.x, s.y] = slots[n];
+        s.img = this.add.image(s.x, s.y, pigTex(this, s.color, s.scarf, s.act)).setScale(s.size === 'big' ? 0.85 : 0.55).setDepth(s.y + 30).setFlipX(Math.random() < 0.5);
+        s.spot = { x: s.x, y: s.y + 45 }; s.tipUp = 90;
+        return s;
+      });
+      return;
+    }
+  }
+  usePlant(p) {
+    if (p !== this.moly) return this.miss(p.flower === 'white' && p.root === 'black' ? 'Not here! Read where it grows.' : 'This is not the moly! Read again.');
+    sfx.good(); this.addCoins(this.cur.mistakes ? 2 : 4, p.x, p.y - 40); this.tip.setVisible(false);
+    this.tweens.add({ targets: p.img, y: p.y - 60, scale: 0.4, alpha: 0, duration: 700 });
+    p.gone = true; this.floatText('Yum! You ate the moly.', p.x, p.y - 80, '#ffe066', 28);
+    this.phase = 'house'; this.clearNote();
+    this.time.delayedCall(1000, () => this.story(VOY_STORY.Circe2, () => { this.phase = 'pigs'; this.nextPig(); }));
+  }
+  nextPig() {
+    if (this.round >= 5) { this.phase = 'end'; this.clearNote(); return this.story(VOY_STORY.CirceEnd, () => this.finishIsland(2)); }
+    const t = this.plan[this.round];
+    this.note(t.en, t.he, 'circe');
+  }
+  usePig(s) {
+    const t = this.plan[this.round];
+    if (s !== t.target) { this.floatText('Oink!', s.x, s.y - 60, '#ffb3d9', 30); return this.miss('Not this pig! Read again.'); }
+    sfx.good(); s.gone = true; this.tip.setVisible(false);
+    this.addCoins(this.cur.mistakes ? 2 : 4, s.x, s.y - 40);
+    this.poof(s.x, s.y - 20, 26); s.img.destroy();
+    const man = this.sailor(s.x, s.y);
+    this.floatText('I am a man again! Thank you!', s.x, s.y - 80, '#ffe066', 26);
+    this.time.delayedCall(900, () => this.tweens.add({ targets: man.parts, x: `+=${this.pen.x - 60 - s.x}`, alpha: 0, duration: 1000, onComplete: () => man.shade.destroy() }));
+    this.round++; this.time.delayedCall(1000, () => this.nextPig());
+  }
+  // a pig runs away when she comes close (it stays inside the pen); otherwise it trots around a little
+  runPigs(dt) {
+    const P = this.pen, k = dt / 1000;
+    for (const g of this.pigs) {
+      if (g.gone) continue;
+      const dx = g.x - this.player.x, dy = g.y - this.player.y, d = Math.hypot(dx, dy);
+      let vx = 0, vy = 0;
+      if (d < 150) { vx = dx / d * 150; vy = dy / d * 150; }
+      else { g.wt = (g.wt || 0) - dt; if (g.wt <= 0) { g.wt = Phaser.Math.Between(900, 2200); g.wx = Phaser.Math.Between(-40, 40); g.wy = Phaser.Math.Between(-25, 25); } vx = g.wx; vy = g.wy; }
+      g.x = Phaser.Math.Clamp(g.x + vx * k, P.x + 60, P.x + P.w - 60); g.y = Phaser.Math.Clamp(g.y + vy * k, P.y + 70, P.y + P.h - 50);
+      if (Math.abs(vx) > 5) g.img.setFlipX(vx < 0);
+      g.img.setPosition(g.x, g.y).setDepth(g.y + 30); g.spot.x = g.x; g.spot.y = g.y + 45;
+    }
+  }
+  update(time, delta) {
+    const busy = this.baseUpdate();
+    this.moveHero(!busy);
+    if (busy) return;
+    if (this.phase === 'pigs') this.runPigs(delta);
+    const list = this.phase === 'moly' ? this.plants : this.phase === 'pigs' ? this.pigs : [];
+    const n = this.nearest(list, this.phase === 'pigs' ? 100 : 90);
+    if (n && Phaser.Input.Keyboard.JustDown(this.keys.space)) (this.phase === 'moly' ? this.usePlant(n) : this.usePig(n));
+  }
+}
+
+// =====================================================================
+//  4a. THE SIRENS, on deck: wax in the ears of each sailor, tie Odysseus to the mast
+// =====================================================================
+class Sirens extends Base {
+  constructor() { super('Sirens'); }
+  create() {
+    this.setup(W, H, 'The Sirens');
+    this.tile(W / 2, H / 2, W, H, 'sea');
+    // the deck: a big wooden boat from above
+    const g = this.add.graphics().setDepth(1);
+    g.fillStyle(0x2b1a0a).fillEllipse(W / 2, H / 2 + 50, 1060, 560);
+    this.tile(W / 2, H / 2 + 50, 1020, 520, 'deck').setDepth(1).setMask(this.make.graphics().fillEllipse(W / 2, H / 2 + 50, 1020, 520).createGeometryMask());
+    this.mast = { x: W / 2, y: 400 };
+    this.add.circle(this.mast.x, this.mast.y, 22, 0x5a3416).setStrokeStyle(4, 0x2b1a0a).setDepth(380);
+    this.ody = { x: W / 2, y: 430, spot: { x: W / 2, y: 470 }, tipUp: 120 };
+    this.ody.img = this.pic(['art_odysseus'], '🧔', this.ody.x, this.ody.y, 90).setDepth(470);
+    this.box = { x: 330, y: 560, spot: { x: 330, y: 600 }, tipUp: 80 };
+    this.add.image(this.box.x, this.box.y, 'box').setDepth(590);
+    const hats = shuffle(COLORS.map(c => c[0])).slice(0, 4);
+    this.crew = [[300, 340], [520, 600], [800, 600], [980, 360]].map(([x, y], n) => this.sailor(x, y, hats[n]));
+    this.order = shuffle(this.crew);
+    this.crew.forEach(c => this.roam(c, 70, 45));
+    this.makeHero(640, 560);
+    this.step = -1; this.hasWax = false;
+    window.voyage = this;
+    this.story(VOY_STORY.Sirens1, () => this.next());
+  }
+  next() {
+    this.step++;
+    if (this.step === 0) return this.note('Take the wax from the box.', 'קחי את השעווה מהקופסה.', 'odysseus');
+    if (this.step <= 4) { const s = this.order[this.step - 1]; return this.note(`Put wax in the ears of the sailor with the ${s.hat} hat.`, `שימי שעווה באוזניים של המלח עם הכובע ${colorOf(s.hat)[3]}.`, 'odysseus'); }
+    if (this.step === 5) return this.note('Now tie Odysseus to the mast.', 'עכשיו קשרי את אודיסאוס לתורן.', 'odysseus');
+    this.clearNote();
+    this.time.delayedCall(700, () => this.story(VOY_STORY.Sirens2, () => { this.cameras.main.fadeOut(400); this.time.delayedCall(450, () => this.scene.start('SirensSea')); }));
+  }
+  use(o) {
+    if (this.step === 0) { if (o !== this.box) return this.miss('First take the wax! Read again.'); sfx.good(); this.floatText('You have the wax!', o.x, o.y - 70); return this.next(); }
+    if (this.step <= 4) {
+      const want = this.order[this.step - 1];
+      if (o !== want) return this.miss(o === this.ody ? 'Not Odysseus! Read again.' : 'Not him! Read again.');
+      sfx.good(); this.addCoins(this.cur.mistakes ? 1 : 3, o.x, o.y - 40); o.gone = true; if (o.roamTween) o.roamTween.stop();
+      // the wax goes on his ears: both sides of the head, a little below the top (measured on his picture)
+      const a = Gear.anchor(this, o.img.texture.key, '__BASE'), k = o.img.scaleX, hx = o.img.x + (a.x - a.w / 2) * k * (o.img.flipX ? -1 : 1);
+      const ey = o.img.y - o.img.displayHeight / 2 + (a.y + a.hw * 0.62) * k, ex = a.hw * k * 0.5;
+      [-ex, ex].forEach(dx => { this.add.ellipse(hx + dx, ey, 5.5, 7.5, 0xffe066).setStrokeStyle(1.5, 0xb8860b).setDepth(o.y + 60); this.add.circle(hx + dx - 1, ey - 2, 1.5, 0xffffff).setDepth(o.y + 61); });
+      this.floatText('Now he cannot hear!', o.x, o.y - 70, '#ffe066', 24);
+      return this.next();
+    }
+    if (this.step === 5) {
+      if (o !== this.ody) return this.miss('Tie Odysseus! Read again.');
+      sfx.good(); this.addCoins(3, o.x, o.y - 40); o.gone = true;
+      [0, 1, 2].forEach(k => this.add.ellipse(o.x, o.y - 30 + k * 18, 70, 18).setStrokeStyle(5, 0xc9a26a).setDepth(480));
+      return this.next();
+    }
+  }
+  update() {
+    const busy = this.baseUpdate();
+    this.moveHero(!busy);
+    if (busy || this.step < 0 || this.step > 5) return;
+    const n = this.nearest([this.box, this.ody, ...this.crew], 85);
+    if (n && Phaser.Input.Keyboard.JustDown(this.keys.space)) this.use(n);
+  }
+}
+
+// =====================================================================
+//  4b. THE SIRENS, at sea: pass each big rock on the side Odysseus says, not the side the Sirens say
+// =====================================================================
+const ODY_SIDE = [ // Odysseus: s = the right side to sail, o = the other side
+  [(s, o) => `Sail to the ${s} of the big rock.`, (s, o) => `הפליגי לצד ${LR_HE[s]} של הסלע הגדול.`],
+  [(s, o) => `Go ${s}! The Sirens are on the ${o}.`, (s, o) => `סעי ${LR_TO[s]}! הסירנות בצד ${LR_HE[o]}.`],
+  [(s, o) => `Keep the big rock on your ${o}.`, (s, o) => `השאירי את הסלע הגדול בצד ${LR_HE[o]} שלך.`],
+  [(s, o) => `Turn ${s} now. Do not listen to the song!`, (s, o) => `פני ${LR_TO[s]} עכשיו. אל תקשיבי לשיר!`],
+];
+const SIREN_SIDE = [o => `Sail to the ${o}! We have cake!`, o => `Come to the ${o} side! Hear our song!`, o => `Go ${o}, brave sailor! It is safe here!`];
+class SirensSea extends Base {
+  constructor() { super('SirensSea'); }
+  create() {
+    const GATES = 6, GAP = 650;
+    this.setup(W, GATES * GAP + 900, 'The Sirens');
+    this.tile(W / 2, this.wh / 2, W, this.wh, 'sea');
+    this.cx = W / 2;
+    this.gates = Array.from({ length: GATES }, (_, i) => {
+      const y = this.wh - 500 - i * GAP, side = pick(['left', 'right']), wrong = OPP[side];
+      this.add.image(this.cx, y, 'rock').setScale(1.1).setDepth(10);
+      // the Sirens sit on rocks on the wrong side
+      const sx = this.cx + (wrong === 'left' ? -330 : 330);
+      this.add.image(sx, y + 20, 'rock').setScale(0.7).setDepth(10);
+      const sir = this.pic(['art_siren', 'art_harpy'], '🧜‍♀️', sx, y - 30, 110).setDepth(11);
+      this.tweens.add({ targets: sir, y: y - 40, duration: 1200, yoyo: true, repeat: -1, ease: 'Sine.inOut' });
+      return { y, side, wrong, tpl: pick(ODY_SIDE), siren: i > 0 ? pick(SIREN_SIDE) : null };
+    });
+    // small rocks between the big ones: steer around them (bumping one is not a reading mistake)
+    this.smalls = [];
+    this.gates.forEach(gt => { for (let k = 0; k < 2; k++) {
+      const x = Phaser.Math.Between(this.cx - 330, this.cx + 330), y = gt.y + 220 + k * 190 + Phaser.Math.Between(-30, 30);
+      this.smalls.push({ x, y, img: this.add.image(x, y, 'rock').setScale(0.42).setDepth(10) });
+    } });
+    this.ship = this.makeShip(this.cx, this.wh - 150);
+    this.cameras.main.startFollow(this.ship, true, 0.1, 0.1, 0, 230);
+    this.gi = 0; this.announced = -1; this.crashing = false;
+    window.voyage = this;
+  }
+  announce() {
+    const g = this.gates[this.gi];
+    this.announced = this.gi;
+    this.note(g.tpl[0](g.side, g.wrong), g.tpl[1](g.side, g.wrong), 'odysseus');
+    this.note2(g.siren ? g.siren(g.wrong) : null, 'siren');
+    if (g.siren) sfx.song();
+  }
+  update() {
+    if (this.baseUpdate()) { this.ship.setVelocity(0, 0); return; }
+    if (this.gi >= this.gates.length) { this.ship.setVelocity(0, 0); return; }
+    const k = this.keys, g = this.gates[this.gi];
+    if (this.announced !== this.gi && this.ship.y < g.y + 560) this.announce();
+    if (this.crashing) return;
+    let vx = 0; if (k.left.isDown || k.a.isDown) vx -= 1; if (k.right.isDown || k.d.isDown) vx += 1;
+    this.ship.setVelocity(vx * 270, -150);
+    this.ship.angle = vx * 12;
+    for (const r of this.smalls) if (!r.hit && Math.abs(this.ship.x - r.x) < 55 && Math.abs(this.ship.y - r.y) < 60) {
+      r.hit = true; this.time.delayedCall(1500, () => r.hit = false);
+      this.crashing = true; this.ship.setVelocity(0, 0); sfx.splash(); this.cameras.main.shake(150, 0.005);
+      this.floatText('Bump! Watch out for the rocks!', this.ship.x, this.ship.y - 110, '#fff8e6', 26);
+      this.tweens.add({ targets: this.ship, y: this.ship.y + 170, angle: 0, duration: 700, ease: 'Quad.out', onComplete: () => this.crashing = false });
+      return;
+    }
+    if (this.ship.y < g.y) {
+      const dx = this.ship.x - this.cx;
+      if (Math.abs(dx) < 95) return this.crash('Go around the rock!');
+      const side = dx < 0 ? 'left' : 'right';
+      if (side !== g.side) return this.crash('The Sirens trick you! Read again.');
+      sfx.good(); this.addCoins(this.cur.mistakes ? 1 : 3, this.ship.x, this.ship.y - 60);
+      this.floatText(this.cur.mistakes ? 'Good!' : 'Perfect!', this.ship.x, this.ship.y - 100, '#ffe066', 30);
+      this.gi++; this.note2(null);
+      if (this.gi >= this.gates.length) { this.clearNote(); this.ship.setVelocity(0, 0); this.time.delayedCall(800, () => this.story(VOY_STORY.SirensEnd, () => this.finishIsland(3))); }
+    }
+  }
+  crash(msg) {
+    this.crashing = true; this.ship.setVelocity(0, 0); sfx.splash();
+    this.miss(msg, this.ship.x, this.ship.y - 110, false);
+    this.note2(this.gates[this.gi].siren ? this.gates[this.gi].siren(this.gates[this.gi].wrong) : null, 'siren');
+    this.tweens.add({ targets: this.ship, x: this.cx, y: this.gates[this.gi].y + 430, angle: 0, duration: 900, ease: 'Quad.out', onComplete: () => this.crashing = false });
+  }
+}
+
+// =====================================================================
+//  5. SCYLLA AND CHARYBDIS: wait when Scylla is awake, keep away from the whirlpool, stay in the middle
+// =====================================================================
+class Strait extends Base {
+  constructor() { super('Strait'); }
+  create() {
+    const kinds = shuffle(['whirl', 'whirl', 'wait', 'wait', 'middle', 'whirl']);
+    const ZONE = 620;
+    this.setup(W, kinds.length * ZONE + 800, 'Scylla and Charybdis');
+    this.tile(W / 2, this.wh / 2, W, this.wh, 'darksea');
+    this.left = 320; this.right = W - 320;
+    // cliffs on both sides
+    const g = this.add.graphics().setDepth(30);
+    if (this.has('cliff')) [[0, this.left], [this.right, W]].forEach(([a, b]) => this.tile((a + b) / 2, this.wh / 2, b - a, this.wh, 'cliff').setDepth(29));
+    else [[0, this.left], [this.right, W]].forEach(([a, b]) => { g.fillStyle(0x5c4a40).fillRect(a, 0, b - a, this.wh); g.fillStyle(0x7a6658).fillRect(a + (a ? 20 : 30), 0, 80, this.wh); });
+    g.lineStyle(8, 0x2b1a0a).lineBetween(this.left, 0, this.left, this.wh).lineBetween(this.right, 0, this.right, this.wh);
+    this.zones = kinds.map((kind, i) => {
+      const y0 = this.wh - 400 - i * ZONE, mid = y0 - ZONE / 2, z = { kind, y0, mid, y1: y0 - ZONE };
+      if (kind === 'whirl') {
+        z.side = pick(['left', 'right']);
+        z.whirl = this.add.image(z.side === 'left' ? this.left + 170 : this.right - 170, mid, 'whirl').setDepth(5).setAlpha(0);
+        this.tweens.add({ targets: z.whirl, angle: 360, duration: 2600, repeat: -1 });
+      }
+      if (kind === 'wait') {   // Scylla's dark cave in the cliff
+        z.cave = this.has('v_cavemouth') ? this.add.image(this.right + 80, mid - 60, 'v_cavemouth').setDepth(31).setFlipX(true) : this.add.ellipse(this.right + 40, mid - 60, 120, 150, 0x0b0805).setDepth(31);
+      }
+      // a floating rock drifts from side to side in every zone
+      const fy = z.y0 - Phaser.Math.Between(120, 200), fr = this.add.image(Phaser.Math.Between(this.left + 80, this.right - 80), fy, 'rock').setScale(0.4).setDepth(6);
+      this.tweens.add({ targets: fr, x: { from: this.left + 70, to: this.right - 70 }, duration: Phaser.Math.Between(2600, 3800), yoyo: true, repeat: -1, ease: 'Sine.inOut', delay: Phaser.Math.Between(0, 1500) });
+      z.floater = fr;
+      if (kind === 'middle') for (let y = z.y1 + 60; y < z.y0 - 40; y += 110) { this.add.image(this.left + 70, y, 'rock').setScale(0.5).setDepth(6); this.add.image(this.right - 70, y, 'rock').setScale(0.5).setDepth(6); }
+      return z;
+    });
+    this.ship = this.makeShip(W / 2, this.wh - 150);
+    this.cameras.main.startFollow(this.ship, true, 0.1, 0.1, 0, 220);
+    this.zi = 0; this.announced = -1; this.hit = false;
+    window.voyage = this;
+    this.story(VOY_STORY.Strait1, () => {});
+  }
+  announce() {
+    const z = this.zones[this.zi];
+    this.announced = this.zi;
+    if (z.kind === 'whirl') this.note(`Charybdis is on the ${z.side}. Stay on the ${OPP[z.side]} side.`, `כריבדיס בצד ${LR_HE[z.side]}. הישארי בצד ${LR_HE[OPP[z.side]]}.`, 'odysseus');
+    if (z.kind === 'middle') this.note('Stay in the middle. The rocks are sharp!', 'הישארי באמצע. הסלעים חדים!', 'odysseus');
+    if (z.kind === 'wait') this.wake(z);
+  }
+  wake(z) {
+    z.awake = true; z.since = 0; z.wait = Phaser.Math.Between(2800, 4200);
+    this.note('Scylla is awake. Stop and wait.', 'סקילה ערה. עצרי וחכי.', 'odysseus');
+    z.stopY = this.ship.y;
+  }
+  update(time, delta) {
+    if (this.baseUpdate() || this.zi >= this.zones.length) { this.ship.setVelocity(0, 0); return; }
+    const k = this.keys, z = this.zones[this.zi];
+    if (this.announced !== this.zi && this.ship.y < z.y0) this.announce();
+    if (this.hit) return;
+    let vx = 0, vy = 0;
+    if (k.left.isDown || k.a.isDown) vx -= 1; if (k.right.isDown || k.d.isDown) vx += 1;
+    if (k.up.isDown || k.w.isDown) vy -= 1; if (k.down.isDown || k.s.isDown) vy += 0.5;
+    this.ship.setVelocity(vx * 230, vy * 190);
+    this.ship.x = Phaser.Math.Clamp(this.ship.x, this.left + 50, this.right - 50);
+    this.ship.angle = vx * 10;
+    if (z.kind === 'wait' && this.announced === this.zi && z.awake) {
+      z.since += delta;
+      if (z.stopY - this.ship.y > 40 && z.since > 700) return this.grab(z);
+      if (z.since > z.wait) { z.awake = false; sfx.good(); this.note('Scylla is sleeping now. Go!', 'סקילה ישנה עכשיו. סעי!', 'odysseus'); }
+    }
+    for (const q of this.zones) if (q.floater && !q.bumped && Math.abs(this.ship.x - q.floater.x) < 60 && Math.abs(this.ship.y - q.floater.y) < 60) {
+      q.bumped = true; this.time.delayedCall(1500, () => q.bumped = false);
+      sfx.splash(); this.cameras.main.shake(150, 0.005); this.floatText('Bump! A floating rock!', this.ship.x, this.ship.y - 110, '#fff8e6', 26);
+      this.hit = true; this.ship.setVelocity(0, 0);
+      this.tweens.add({ targets: this.ship, y: this.ship.y + 150, duration: 600, ease: 'Quad.out', onComplete: () => this.hit = false });
+      return;
+    }
+    if (z.kind === 'whirl' && z.whirl) z.whirl.setAlpha(Phaser.Math.Clamp(1 - (this.ship.y - z.mid - 60) / 220, 0, 0.95));
+    if (this.ship.y < z.mid && !z.checked) {
+      z.checked = true;
+      if (z.kind === 'whirl' && (z.side === 'left' ? this.ship.x < W / 2 : this.ship.x > W / 2)) { z.checked = false; return this.spin(z); }
+      if (z.kind === 'middle' && Math.abs(this.ship.x - W / 2) > 150) { z.checked = false; return this.bump(z, 'Ouch! The rocks! Stay in the middle.'); }
+    }
+    if (this.ship.y < z.y1) {
+      sfx.good(); this.addCoins(this.cur && this.cur.mistakes ? 1 : 3, this.ship.x, this.ship.y - 60);
+      this.zi++;
+      if (this.zi >= this.zones.length) { this.clearNote(); this.time.delayedCall(700, () => this.story(VOY_STORY.StraitEnd, () => this.finishIsland(4))); }
+    }
+  }
+  back(z, dist, then) {
+    this.hit = true; this.ship.setVelocity(0, 0);
+    this.tweens.add({ targets: this.ship, y: z.y0 + dist, x: W / 2, duration: 1000, ease: 'Quad.out', onComplete: () => { this.ship.angle = 0; this.hit = false; then && then(); } });
+  }
+  grab(z) {
+    sfx.wrong(); this.miss('Scylla is awake! Stop and wait!', this.ship.x, this.ship.y - 120, false);
+    if (this.has('card_scylla')) {   // Scylla herself jumps out of her cave at the ship, then goes back
+      const sc = this.add.image(this.right + 60, z.mid - 60, 'card_scylla').setDepth(41).setScale(0.05).setAngle(-10);
+      this.tweens.add({ targets: sc, x: this.ship.x + 70, y: this.ship.y - 70, scale: 0.42, angle: 6, duration: 260, ease: 'Back.out', yoyo: true, hold: 380, onComplete: () => sc.destroy() });
+      this.cameras.main.shake(200, 0.006);
+      return this.back(z, -60, () => { this.wake(z); this.drawNote(false); });
+    }
+    const neck = this.add.graphics().setDepth(40);
+    neck.lineStyle(26, 0x4a6b3a).lineBetween(this.right + 30, z.mid - 60, this.ship.x + 30, this.ship.y - 40).lineStyle(8, 0x2b1a0a).strokeCircle(this.ship.x + 30, this.ship.y - 40, 26);
+    this.time.delayedCall(500, () => neck.destroy());
+    this.back(z, -60, () => { this.wake(z); this.drawNote(false); });
+  }
+  spin(z) {
+    sfx.splash(); this.miss('Charybdis pulls the ship! Read again.', this.ship.x, this.ship.y - 120, false);
+    this.tweens.add({ targets: this.ship, angle: 720, duration: 900 });
+    this.back(z, -40);
+  }
+  bump(z, msg) { sfx.splash(); this.miss(msg, this.ship.x, this.ship.y - 120, false); this.back(z, -40); }
+}
+
+// =====================================================================
+//  6. POSEIDON'S STORM: Athena's warnings say where the waves will hit; then Ithaca
+// =====================================================================
+const STORM = [
+  ['A big wave comes from the left! Go to the right side.', 'גל גדול מגיע משמאל! סעי לצד ימין.', [0, 1]],
+  ['A big wave comes from the right! Go to the left side.', 'גל גדול מגיע מימין! סעי לצד שמאל.', [1, 2]],
+  ['Two waves are coming! Stay in the middle.', 'שני גלים מגיעים! הישארי באמצע.', [0, 2]],
+  ['Lightning! Do not stay in the middle.', 'ברק! אל תישארי באמצע.', [1]],
+  ['Watch out on the left and in the middle! Go right!', 'זהירות בצד שמאל ובאמצע! סעי ימינה!', [0, 1]],
+  ['A wave on the right! Go to the middle.', 'גל בצד ימין! סעי לאמצע.', [2, 0]],
+];
+const LANES = [420, 640, 860];
+class Storm extends Base {
+  constructor() { super('Storm'); }
+  create() {
+    this.setup(W, H, "Poseidon's Storm");
+    this.sea = this.tile(W / 2, H / 2, W, H, 'darksea');
+    this.rain = this.add.particles(0, 0, 'soft', { x: { min: 0, max: W }, y: -20, speedY: { min: 600, max: 900 }, speedX: -80, lifespan: 1200, scaleX: 0.15, scaleY: 1.2, alpha: 0.5, frequency: 12 }).setDepth(60);
+    this.pose = this.pic(['card_poseidon'], '🔱', W - 160, 300, 260).setDepth(5).setAlpha(0.35);
+    this.lane = 1;
+    this.ship = this.add.image(LANES[1], 600, 'ship').setDepth(50);
+    this.tweens.add({ targets: this.ship, angle: { from: -5, to: 5 }, duration: 900, yoyo: true, repeat: -1, ease: 'Sine.inOut' });
+    this.safe = 0; this.last = -1; this.waiting = false;
+    window.voyage = this;
+    this.story(VOY_STORY.Storm1, () => this.warn());
+  }
+  warn() {
+    if (this.safe >= 8) return this.calm();
+    let i; do { i = Phaser.Math.Between(0, STORM.length - 1); } while (i === this.last);
+    this.last = i; this.w = STORM[i];
+    // lane 2 (index) of the "go to the middle" warning: the danger is the right lane and the left lane
+    this.note(this.w[0], this.w[1], 'athena');
+    this.repeatWarn();
+  }
+  repeatWarn() {
+    this.waiting = true;
+    this.time.delayedCall(3300, () => this.strike());
+  }
+  strike() {
+    const danger = this.w[2];
+    danger.forEach(l => {
+      if (this.w[0].startsWith('Lightning')) {
+        const b = this.add.image(LANES[l], 360, 'bolt').setDepth(70).setScale(1.6); this.cameras.main.flash(150, 255, 255, 220); sfx.thunder();
+        this.time.delayedCall(350, () => b.destroy());
+      } else {
+        const wv = this.add.image(LANES[l], -80, 'wave').setDepth(70).setScale(0.9);
+        this.tweens.add({ targets: wv, y: H + 120, duration: 700, ease: 'Quad.in', onComplete: () => wv.destroy() }); sfx.splash();
+      }
+    });
+    this.time.delayedCall(450, () => {
+      this.waiting = false;
+      if (danger.includes(this.lane)) {
+        this.miss('The storm hits the ship! Read again.');
+        this.tweens.add({ targets: this.ship, x: LANES[this.lane] + 20, duration: 60, yoyo: true, repeat: 4 });
+        this.time.delayedCall(1300, () => this.repeatWarn());
+      } else {
+        this.safe++; sfx.good(); this.addCoins(this.cur.mistakes ? 1 : 3, this.ship.x, this.ship.y - 60);
+        this.floatText(`Safe! (${this.safe}/8)`, this.ship.x, this.ship.y - 110, '#ffe066', 30);
+        this.time.delayedCall(1100, () => this.warn());
+      }
+    });
+  }
+  calm() {
+    this.clearNote(); this.rain.stop();
+    this.tweens.add({ targets: this.pose, alpha: 0, duration: 1000 });
+    this.tile(W / 2, H / 2, W, H, 'sea').setDepth(1).setAlpha(0).setName('calm');
+    this.tweens.add({ targets: this.children.getByName('calm'), alpha: 1, duration: 1500 });
+    this.time.delayedCall(1600, () => this.story(VOY_STORY.Ithaca, () => this.finishIsland(5, () => this.ending())));
+  }
+  ending() {
+    const o = this.add.container(0, 0).setDepth(9500);
+    o.add(this.add.rectangle(W / 2, H / 2, W, H, 0x050f1e, 0.8).setInteractive());
+    o.add(this.add.text(W / 2, 180, 'Home at last!', { fontFamily: 'Cinzel', fontSize: 76, fontStyle: '900', color: '#ffd43b', stroke: '#6b4400', strokeThickness: 10 }).setOrigin(0.5));
+    o.add(this.add.text(W / 2, 330, 'You helped Odysseus sail home to Ithaca.\nYou are a true hero of the sea!\n\nYour new cards are in the album in Hermes\' Shop.', { fontFamily: 'Nunito', fontSize: 28, fontStyle: '700', color: '#ffffff', align: 'center', lineSpacing: 6 }).setOrigin(0.5));
+    const b = this.add.text(W / 2, 520, 'Back to camp', { fontFamily: 'Cinzel', fontSize: 36, fontStyle: '900', color: '#2b1a0a', backgroundColor: '#ffd43b', padding: { x: 30, y: 12 } }).setOrigin(0.5).setInteractive({ useHandCursor: true }).on('pointerdown', goToCamp);
+    o.add(b); o.list.forEach(x => x.setScrollFactor(0)); o.setScrollFactor(0);
+    this.keys.enter.once('down', goToCamp);
+  }
+  update() {
+    if (this.baseUpdate()) return;
+    this.sea.tilePositionY -= 3; this.sea.tilePositionX += 1;
+    const J = Phaser.Input.Keyboard.JustDown, k = this.keys;
+    let d = 0; if (J(k.left) || J(k.a)) d = -1; if (J(k.right) || J(k.d)) d = 1;
+    if (d) { this.lane = Phaser.Math.Clamp(this.lane + d, 0, 2); this.tweens.add({ targets: this.ship, x: LANES[this.lane], duration: 220, ease: 'Quad.out' }); }
+  }
+}
+
+Promise.all([document.fonts.load('900 40px Cinzel'), document.fonts.load('900 20px Nunito'), loadManifest()]).catch(() => {}).then(() => {
+  new Phaser.Game({
+    type: Phaser.AUTO, parent: 'game', backgroundColor: '#0d1b2a',
+    render: { antialias: true, mipmapFilter: 'LINEAR_MIPMAP_LINEAR' },
+    physics: { default: 'arcade', arcade: { debug: false } },
+    scale: { mode: Phaser.Scale.FIT, autoCenter: Phaser.Scale.CENTER_BOTH, width: Math.round(W * HD), height: Math.round(H * HD) },
+    scene: [Boot, Sea, Lotus, Cyclops, Circe, Sirens, SirensSea, Strait, Storm],
+  });
+});
+</script>
+</body>
+</html>

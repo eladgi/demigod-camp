@@ -1,0 +1,872 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Hermes Express</title>
+<link href="https://fonts.googleapis.com/css2?family=Cinzel:wght@700;900&family=Nunito:wght@700;900&display=swap" rel="stylesheet">
+<style>
+  html, body { margin: 0; height: 100%; background: #0d1b2a; overflow: hidden; }
+  #game { width: 100%; height: 100%; }
+</style>
+<script src="https://cdn.jsdelivr.net/npm/phaser@3.80.1/dist/phaser.min.js"></script>
+<script src="common.js"></script>
+<script src="phrases.js"></script>
+</head>
+<body>
+<div id="game"></div>
+<script>
+// =====================================================================
+//  CONTENT: everything in the village has details; every package has a sentence that fits only ONE place or person
+// =====================================================================
+const COLORS = [ // [english, hex, hebrew fem (door), hebrew masc (hat)]
+  ['red', 0xe84545, 'האדומה', 'האדום'], ['blue', 0x3b82f6, 'הכחולה', 'הכחול'], ['green', 0x3fbf6f, 'הירוקה', 'הירוק'],
+  ['yellow', 0xffd43b, 'הצהובה', 'הצהוב'], ['purple', 0x9b5de5, 'הסגולה', 'הסגול'], ['orange', 0xff8a1f, 'הכתומה', 'הכתום'],
+];
+const YARDS = { tree: ['a big tree', 'עץ גדול', 'tree', '🌳'], flowers: ['flowers', 'פרחים', null, '🌷'], dog: ['a dog', 'כלב', 'dog', '🐶'], cat: ['a cat', 'חתול', 'cat', '🐱'],
+  horse: ['a horse', 'סוס', 'horse', '🐴'], car: ['a car', 'מכונית', 'car', '🚗'], ball: ['a ball', 'כדור', 'ball', '⚽'], rabbit: ['a rabbit', 'ארנב', 'rabbit', '🐰'] };
+// 12 houses: some yard things twice (for two-clue days), some only once (so one clue is enough on day 1)
+const YARD_LIST = ['tree', 'tree', 'flowers', 'flowers', 'dog', 'dog', 'cat', 'horse', 'car', 'ball', 'rabbit', null];
+const WINDOWS_EN = { 1: 'one window', 2: 'two windows', 3: 'three windows' };
+const WINDOWS_HE = { 1: 'חלון אחד', 2: 'שני חלונות', 3: 'שלושה חלונות' };
+const PEOPLE = { girl: ['ילדה', 'f', '👧'], boy: ['ילד', 'm', '👦'], man: ['איש', 'm', '👨'], woman: ['אישה', 'f', '👩'], grandpa: ['סבא', 'm', '👴'], grandma: ['סבתא', 'f', '👵'] };
+const PETS = { cat: ['חתול', 'cat'], dog: ['כלב', 'dog'], owl: ['ינשוף', 'owl'], rabbit: ['ארנב', 'rabbit'] };
+const LANDMARKS = [ // [english, hebrew with ה, art/icon key, emoji]
+  ['fountain', 'המזרקה', 'art_fountain', '⛲'], ['statue', 'הפסל', 'art_owl_statue', '🗿'], ['big tree', 'העץ הגדול', 'icon_tree', '🌳'], ['column', 'העמוד', 'art_column', '🏛️'],
+];
+const RELS = { 'next to': 'שליד ', behind: 'שמאחורי ', 'in front of': 'שמול ' };
+const ITEMS = [ // [english, hebrew, icon word or emoji]
+  ['the cake', 'את העוגה', 'cake'], ['the letter', 'את המכתב', 'art_scroll'], ['the box', 'את הקופסה', 'art_package'], ['the apples', 'את התפוחים', 'apple'],
+  ['the flowers', 'את הפרחים', '💐'], ['the umbrella', 'את המטרייה', 'umbrella'], ['the pizza', 'את הפיצה', 'pizza'], ['the hat', 'את הכובע', 'hat'],
+];
+const DAYS = [
+  { name: 'Day 1', sub: 'Short notes', deliveries: 5 },
+  { name: 'Day 2', sub: 'Two clues', deliveries: 5 },
+  { name: 'Day 3', sub: 'Where is it?', deliveries: 5 },
+  { name: 'Day 4', sub: 'Little letters', deliveries: 5 },
+  { name: 'Eris!', sub: 'Find her in the village!', deliveries: 3, boss: true },
+];
+const LETTERS_PER_BREAK = 3;
+// Hermes speaks with his own voice (recordings in assets/audio/hermes/ once a voice is chosen; browser voice until then)
+const sayH = t => say(t, 'hermes');
+// every kind of villager has a voice of their own (assets/audio/villagers/<type>/)
+const sayV = (type, t) => say(t, 'villagers/' + type);
+
+// =====================================================================
+//  WORLD
+// =====================================================================
+const W = 1280, H = 720, WW = 1700, WH = 1260, SPEED = 290;
+const HOUSE_X = [260, 640, 1060, 1440], HOUSE_Y = [200, 540, 880];
+const ROAD_X = [450, 850, 1250], ROAD_Y = [370, 710], POST = [850, 1120];
+// how big each yard thing is drawn (so a ball is smaller than a horse)
+const YARD_SIZE = { tree: 120, flowers: 62, dog: 52, cat: 46, horse: 84, car: 80, ball: 30, rabbit: 40 };
+const LM_POS = [[450, 370], [1250, 370], [450, 710], [1250, 710]];
+const REL_OFF = { left: [-95, 10], right: [95, 10], behind: [0, -85], 'in front of': [0, 95] };
+const pick = a => a[Math.floor(Math.random() * a.length)];
+const shuffle = a => Phaser.Utils.Array.Shuffle(a.slice());
+const cap = s => s[0].toUpperCase() + s.slice(1);
+
+const sfx = {
+  coin: () => { tone(988, 988, .06, 'square', .04); setTimeout(() => tone(1319, 1319, .12, 'square', .04), 60); },
+  good: () => [659, 880, 1175].forEach((f, i) => setTimeout(() => tone(f, f, .12, 'square', .06), i * 80)),
+  wrong: () => { tone(300, 200, .12, 'square', .07); setTimeout(() => tone(220, 150, .18, 'square', .07), 110); },
+  knock: () => { tone(180, 120, .06, 'square', .08); setTimeout(() => tone(180, 120, .06, 'square', .08), 130); },
+  page: () => tone(800, 1200, .08, 'triangle', .04),
+  win: () => [523, 659, 784, 1047].forEach((f, i) => setTimeout(() => tone(f, f, .25, 'square', .07), i * 140)),
+};
+
+// =====================================================================
+//  THE VILLAGE (made new every day)
+// =====================================================================
+function buildVillage() {
+  const houses = [], people = [];
+  const colors = shuffle([...COLORS, ...COLORS]), yards = shuffle(YARD_LIST);
+  let n = 1;
+  HOUSE_Y.forEach((y, r) => HOUSE_X.forEach((x, c) => {
+    houses.push({ kind: 'house', x, y, row: r, col: c, number: n++, color: colors.pop(), windows: Phaser.Math.Between(1, 3),
+                  yard: yards.pop(), owner: pick(Object.keys(PEOPLE)) });   // owner: who answers the door (their voice)
+  }));
+  const types = Object.keys(PEOPLE);
+  LM_POS.forEach(([lx, ly], li) => {
+    const rels = shuffle(['left', 'right', 'behind', 'in front of']).slice(0, 2);
+    rels.forEach(rel => {
+      const [dx, dy0] = REL_OFF[rel], dy = LANDMARKS[li][0] === 'big tree' && rel === 'behind' ? -135 : dy0;
+      people.push(dress({ kind: 'person', x: lx + dx, y: ly + dy, lm: li, rel: rel === 'left' || rel === 'right' ? 'next to' : rel }));
+    });
+  });
+  return { houses, people };
+}
+function dress(p) {
+  p.type = pick(Object.keys(PEOPLE)); p.hat = Math.random() < 0.7 ? pick(COLORS) : null; p.pet = Math.random() < 0.6 ? pick(Object.keys(PETS)) : null;
+  return p;
+}
+const aAn = w => (/^[aeiou]/.test(w) ? 'an ' : 'a ') + w;
+
+// ---------- describing a target in English (and Hebrew for help) ----------
+const housePhrase = (h, keys) => {
+  const parts = [], he = [];
+  for (const k of keys) {
+    if (k === 'color') { parts.push(`the ${h.color[0]} door`); he.push(`הדלת ${h.color[2]}`); }
+    if (k === 'windows') { parts.push(WINDOWS_EN[h.windows]); he.push(WINDOWS_HE[h.windows]); }
+    if (k === 'yard') { parts.push(YARDS[h.yard][0]); he.push(YARDS[h.yard][1]); }
+  }
+  return { en: 'the house with ' + parts.join(' and '), he: 'לבית עם ' + he.join(' ו') };
+};
+const personPhrase = (p, keys, V) => {
+  const [heType, g] = PEOPLE[p.type];
+  const who = keys.includes('type') ? p.type : 'person', heWho = keys.includes('type') ? heType : (g === 'f' ? 'אישה' : 'אדם');
+  const withs = [], heWiths = [];
+  if (keys.includes('pet')) { withs.push(`the ${p.pet}`); heWiths.push('ה' + PETS[p.pet][0]); }
+  if (keys.includes('hat')) { withs.push(`the ${p.hat[0]} hat`); heWiths.push(`הכובע ${p.hat[3]}`); }
+  if (keys.includes('rel')) {
+    const lm = LANDMARKS[p.lm];
+    return { en: `the ${who} ${p.rel} the ${lm[0]}`, he: `ל${heWho} ${RELS[p.rel]}${lm[1]}` };
+  }
+  return { en: `the ${who}` + (withs.length ? ' with ' + withs.join(' and ') : ''), he: `ל${heWho}` + (heWiths.length ? ' עם ' + heWiths.join(' ו') : '') };
+};
+function matches(t, keys, all) {
+  return all.filter(o => o.kind === t.kind && keys.every(k => {
+    if (k === 'color') return o.color === t.color;
+    if (k === 'windows') return o.windows === t.windows;
+    if (k === 'yard') return o.yard === t.yard;
+    if (k === 'number') return o.number === t.number;
+    if (k === 'type') return o.type === t.type;
+    if (k === 'hat') return o.hat === t.hat;
+    if (k === 'pet') return o.pet === t.pet;
+    if (k === 'rel') return o.lm === t.lm && o.rel === t.rel;
+    return true;
+  }));
+}
+const usable = (t, keys) => keys.every(k => (k !== 'yard' || t.yard) && (k !== 'hat' || t.hat) && (k !== 'pet' || t.pet));
+
+// one delivery: a target and a sentence that fits only it. Day 2+ uses two clues where one clue alone is not enough.
+function makeDelivery(day, V, avoid) {
+  const all = [...V.houses, ...V.people];
+  const item = pick(ITEMS);
+  for (let tries = 0; tries < 400; tries++) {
+    const wantHouse = Math.random() < 0.5;
+    const t = pick(wantHouse ? V.houses : V.people);
+    if (avoid.includes(t)) continue;
+    let sets;
+    if (day === 0) sets = wantHouse ? [['yard']] : [['type'], ['pet'], ['hat']];
+    else if (day === 1 || day === 3) sets = wantHouse ? [['color', 'windows'], ['color', 'yard'], ['windows', 'yard']] : [['type', 'hat'], ['type', 'pet'], ['pet', 'hat']];
+    else sets = wantHouse ? [['left'], ['right']] : [['type', 'rel']];
+    const keys = pick(sets);
+    if (keys[0] === 'left' || keys[0] === 'right') {
+      // "the house to the left of house number 7"
+      const nb = V.houses.find(h => h.row === t.row && h.col === t.col + (keys[0] === 'left' ? 1 : -1));
+      if (!nb) continue;
+      const en = `the house to the ${keys[0]} of house number ${nb.number}`, he = `לבית ש${keys[0] === 'left' ? 'משמאל' : 'מימין'} לבית מספר ${nb.number}`;
+      return finish(t, item, en, he, day, null);
+    }
+    if (!usable(t, keys)) continue;
+    if (matches(t, keys, all).length !== 1) continue;
+    if (keys.length === 2 && keys.every(k => matches(t, [k], all).length === 1)) continue;   // both clues must be needed
+    if (keys[0] === 'number') return finish(t, item, `house number ${t.number}`, `לבית מספר ${t.number}`, day, keys);
+    const ph = t.kind === 'house' ? housePhrase(t, keys) : personPhrase(t, keys, V);
+    return finish(t, item, ph.en, ph.he, day, keys);
+  }
+  return null;
+}
+function finish(t, item, phrase, phraseHe, day, keys) {
+  const house = t.kind === 'house';
+  let en, he;
+  if (day === 3 && keys) {
+    // two sentences: the clues come in the second one
+    if (house) {
+      const a = [], ah = [];
+      keys.forEach(k => {
+        if (k === 'color') { a.push(`${/^[aeiou]/.test(t.color[0]) ? 'an' : 'a'} ${t.color[0]} door`); ah.push(`דלת ${t.color[2].slice(1)}`); }
+        if (k === 'windows') { a.push(WINDOWS_EN[t.windows]); ah.push(WINDOWS_HE[t.windows]); }
+        if (k === 'yard') { a.push(YARDS[t.yard][0]); ah.push(YARDS[t.yard][1]); }
+      });
+      en = `Please take ${item[0]} to my house. It has ${a.join(' and ')}.`;
+      he = `בבקשה קחי ${item[1]} לבית שלי. יש לו ${ah.join(' ו')}.`;
+    } else {
+      const [heType, g] = PEOPLE[t.type], pron = g === 'f' ? 'She' : 'He';
+      const ws = [], wh = [];
+      if (keys.includes('pet')) { ws.push(`${/^[aeiou]/.test(t.pet) ? 'an' : 'a'} ${t.pet}`); wh.push(PETS[t.pet][0]); }
+      if (keys.includes('hat')) { ws.push(aAn(t.hat[0]) + " hat"); wh.push(`כובע ${t.hat[3].slice(1)}`); }
+      const friendHe = `בבקשה תני ${item[1]} ל${g === 'f' ? 'חברה' : 'חבר'} שלי. `;
+      if (keys.includes('type')) {
+        en = `Please give ${item[0]} to my friend. ${pron} is a ${t.type} with ${ws.join(' and ')}.`;
+        he = friendHe + `${g === 'f' ? 'היא' : 'הוא'} ${heType} עם ${wh.join(' ו')}.`;
+      } else {
+        en = `Please give ${item[0]} to my friend. ${pron} has ${ws.join(' and ')}.`;
+        he = friendHe + `יש ${g === 'f' ? 'לה' : 'לו'} ${wh.join(' ו')}.`;
+      }
+    }
+  } else {
+    if (day === 0) {
+      // day 1: one short full sentence, "This cake is for house number 5."
+      const thing = item[0].replace(/^the /, ''), many = /s$/.test(thing) && thing !== 'box';
+      en = pick([`${many ? 'These' : 'This'} ${thing} ${many ? 'are' : 'is'} for ${phrase}.`, `Take ${item[0]} to ${phrase}.`, `Please bring ${item[0]} to ${phrase}.`]);
+      he = `${item[1].replace(/^את /, '')} ${phraseHe}.`;
+    } else {
+      // days 2-3: a short address label (the package itself is shown as a picture)
+      en = `To ${phrase}.`;
+      he = `${phraseHe}.`;
+    }
+  }
+  return { target: t, item, en: cap(en), he, mistakes: 0 };
+}
+
+// =====================================================================
+//  ERIS (the boss): she hides as one of the villagers; Hermes's note says what she looks like
+// =====================================================================
+const ERIS_ROUNDS = [
+  { open: 'Eris is hiding in the village!', openHe: 'אריס מתחבאת בכפר!', sets: [['type', 'hat'], ['type', 'pet']] },
+  { open: 'Eris is hiding again!', openHe: 'אריס מתחבאת שוב!', sets: [['pet', 'hat'], ['type', 'hat']] },
+  { open: 'Eris is hiding one last time!', openHe: 'אריס מתחבאת בפעם האחרונה!', sets: [['type', 'rel']] },
+];
+function makeEris(round, V) {
+  const R = ERIS_ROUNDS[round];
+  let redressed = false;
+  for (let tries = 0; tries < 3000; tries++) {
+    // no one fits? Eris dresses everyone up again
+    if (tries && tries % 300 === 0) { V.people.forEach(dress); redressed = true; }
+    const t = pick(V.people), keys = pick(R.sets);
+    if (!usable(t, keys) || matches(t, keys, V.people).length !== 1) continue;
+    if (!keys.includes('rel') && keys.some(k => matches(t, [k], V.people).length === 1)) continue;   // every clue is needed
+    const en = [R.open], he = [R.openHe];
+    if (keys.includes('type')) { en.push(`She looks like ${aAn(t.type)}.`); he.push(`היא נראית כמו ${PEOPLE[t.type][0]}.`); }
+    const has = [], hasHe = [];
+    if (keys.includes('pet')) { has.push(aAn(t.pet)); hasHe.push(PETS[t.pet][0]); }
+    if (keys.includes('hat')) { has.push(aAn(t.hat[0]) + ' hat'); hasHe.push(`כובע ${t.hat[3].slice(1)}`); }
+    if (has.length) { en.push(`She has ${has.join(' and ')}.`); he.push(`יש לה ${hasHe.join(' ו')}.`); }
+    if (keys.includes('rel')) { const lm = LANDMARKS[t.lm]; en.push(`She is ${t.rel} the ${lm[0]}.`); he.push(`היא ${RELS[t.rel].slice(1)}${lm[1]}.`); }
+    return { target: t, item: ['', '', '🔍'], en: en.join(' '), he: he.join(' '), mistakes: 0, eris: true, redressed };
+  }
+  return null;
+}
+
+// =====================================================================
+//  FIX THE LETTER: Eris changed one word; the picture shows what is true
+// =====================================================================
+const L_NOUNS = { cat: ['חתולים', 'm', 'החתול'], dog: ['כלבים', 'm', 'הכלב'], apple: ['תפוחים', 'm', 'התפוח'], owl: ['ינשופים', 'm', 'הינשוף'],
+                  rabbit: ['ארנבים', 'm', 'הארנב'], bear: ['דובים', 'm', 'הדוב'], egg: ['ביצים', 'f', 'הביצה'], ball: ['כדורים', 'm', 'הכדור'],
+                  star: ['כוכבים', 'm', 'הכוכב'], car: ['מכוניות', 'f', 'המכונית'], boat: ['סירות', 'f', 'הסירה'], hat: ['כובעים', 'm', 'הכובע'] };
+const L_NUM = { two: [2, 'שני', 'שתי'], three: [3, 'שלושה', 'שלוש'], four: [4, 'ארבעה', 'ארבע'], five: [5, 'חמישה', 'חמש'] };
+const L_PREP = { under: 'מתחת ל', on: 'על ', 'next to': 'ליד ' };
+function makeLetter() {
+  const nouns = shuffle(Object.keys(L_NOUNS));
+  const a = nouns[0], b = nouns[1];
+  const num = pick(Object.keys(L_NUM)), prep = pick(Object.keys(L_PREP));
+  // sentence 1: "I have three cats." sentence 2: "The dog is under the tree."
+  const s1 = ['I', 'have', num, a + 's.'], s2 = ['The', b, 'is', prep, 'the', 'tree.'];
+  const truth = { n: L_NUM[num][0], a, b, prep };
+  const kinds = shuffle(['num', 'nounA', 'nounB', 'prep']);
+  const kind = kinds[0];
+  let sent, idx, right, wrongs;
+  if (kind === 'num') { sent = s1; idx = 2; right = num; wrongs = shuffle(Object.keys(L_NUM).filter(x => x !== num)).slice(0, 2); }
+  if (kind === 'nounA') { sent = s1; idx = 3; right = a + 's.'; wrongs = shuffle(nouns.slice(2)).slice(0, 2).map(x => x + 's.'); }
+  if (kind === 'nounB') { sent = s2; idx = 1; right = b; wrongs = shuffle(nouns.slice(2)).slice(0, 2); }
+  if (kind === 'prep') { sent = s2; idx = 3; right = prep; wrongs = Object.keys(L_PREP).filter(x => x !== prep); }
+  const shown = wrongs[0];
+  sent[idx] = shown;
+  const nb = L_NOUNS[b], na = L_NOUNS[a], numHe = L_NUM[num][na[1] === 'f' ? 2 : 1];
+  const he = `יש לי ${numHe} ${na[0]}. ${nb[2]} ${L_PREP[prep]}${prep === 'under' ? 'עץ' : 'העץ'}.`;
+  const options = shuffle([right, ...wrongs.slice(1), ...shuffle(kind === 'num' ? Object.keys(L_NUM) : kind === 'prep' ? Object.keys(L_PREP) : nouns.slice(4).map(x => kind === 'nounA' ? x + 's.' : x)).filter(x => x !== right && x !== shown && !wrongs.includes(x))].slice(0, 3));
+  if (!options.includes(right)) options[0] = right;
+  return { words: [['Dear', 'Hermes,'], s1, s2, ['Love,', 'Iris']], bad: { line: sent === s1 ? 1 : 2, idx }, right, options: shuffle(options), truth, he, mistakes: 0 };
+}
+
+// =====================================================================
+//  SCENE
+// =====================================================================
+class Village extends Phaser.Scene {
+  constructor() { super('village'); }
+  init(d) { this.dayIndex = d.day ?? 0; this.coins = d.coins ?? 0; this.showTitle = d.title ?? true; }
+
+  preload() {
+    Gear.preload(this);   // pet / crown from Hermes' Shop
+    this.load.on('loaderror', () => {});
+    const img = (k, p) => { if (assetExists(p)) this.load.image(k, p); };
+    img('hero', 'assets/hero.png');
+    if (assetExists('assets/sprites/hero_walk.png')) this.load.spritesheet('hero_walk', 'assets/sprites/hero_walk.png', { frameWidth: 256, frameHeight: 256 });
+    [...WORD_LIST_1, ...WORD_LIST_2].forEach(w => img(iconKey(w[0]), iconFile(w[0])));
+    ['owl_statue', 'column'].forEach(n => img('art_' + n, 'assets/objects/' + n + '.png'));
+    ['house_1', 'house_2', 'house_3', 'door', 'hat', 'girl', 'boy', 'man', 'woman', 'grandpa', 'grandma', 'fountain', 'flowers',
+     'hermes', 'eris', 'parchment', 'grass', 'path', 'package', 'scroll', 'doorfill_1', 'doorfill_2', 'doorfill_3'].forEach(n => img('art_' + n, 'assets/hermes/' + n + '.png'));
+  }
+
+  has(k) { return this.textures.exists(k); }
+  drawPerson(p) {
+    [p.img, p.hatImg, p.petImg].forEach(o => { if (o) { this.tweens.killTweensOf(o); o.destroy(); } }); p.hatImg = p.petImg = null;
+    p.img = this.pic('art_' + p.type, PEOPLE[p.type][2], p.x, p.y, 70).setDepth(p.y + 50);
+    if (p.hat) {
+      p.hatImg = this.has('art_hat') ? this.fit(this.add.image(p.x, p.y - 34, 'art_hat'), 46, 30).setTint(p.hat[1])
+        : this.add.ellipse(p.x, p.y - 30, 44, 16, p.hat[1]).setStrokeStyle(3, 0x2b1a0a);
+      p.hatImg.setDepth(p.y + 51);
+    }
+    if (p.pet) p.petImg = this.pic(iconKey(PETS[p.pet][1]), '🐾', p.x - 34, p.y + 26, 36).setDepth(p.y + 52);
+    if (!p.shade) { p.shade = this.shade(p.x, p.y + 36, 44); p.petShade = this.shade(p.x - 34, p.y + 43, 28); }
+    p.petShade.setVisible(!!p.pet);
+    // a little life: everyone breathes, pets hop now and then
+    const base = p.img.scaleY, d = 1300 + Math.random() * 700;
+    p.img.setOrigin(0.5, 1).setY(p.y + 35);
+    const hat = p.hatImg, hatOff = hat && hat.y - p.img.y, tall = p.img.displayHeight;   // hat height above the feet
+    this.tweens.add({ targets: p.img, scaleY: base * 1.035, duration: d, yoyo: true, repeat: -1, ease: 'Sine.inOut', delay: Math.random() * 800,
+      onUpdate: () => { if (hat && hat.active) hat.y = p.img.y + hatOff - (p.img.scaleY / base - 1) * tall * 0.98; } });   // the hat is glued to the head
+    if (p.petImg) this.tweens.add({ targets: p.petImg, y: p.petImg.y - 7, duration: 190, yoyo: true, repeat: -1, repeatDelay: 1600 + Math.random() * 2500, ease: 'Quad.out' });
+  }
+  // flowers, trees at the edges, butterflies, and a soft dark frame around the screen
+  decorate() {
+    const free = (x, y, r) => !ROAD_Y.some(ry => Math.abs(y - ry) < 60 + r) && !ROAD_X.some(rx => Math.abs(x - rx) < 60 + r)
+      && !this.V.houses.some(h => Math.abs(x - h.x + 30) < 190 + r && Math.abs(y - h.y) < 110 + r) && !(y > POST[1] - 140 && Math.abs(x - POST[0]) < 330);
+    if (this.has('art_flowers')) for (let i = 0, n = 0; i < 400 && n < 16; i++) {
+      const x = Phaser.Math.Between(40, WW - 40), y = Phaser.Math.Between(60, WH - 40);
+      if (free(x, y, 10)) { this.fit(this.add.image(x, y, 'art_flowers'), 40, 40).setDepth(y); n++; }
+    }
+    const tk = iconKey('tree');
+    // everything she may need to see: houses, yard things, people, pets, landmarks
+    const important = [...this.V.houses.flatMap(h => [h.img, h.yardImg]), ...this.V.people.flatMap(p => [p.img, p.hatImg, p.petImg]), ...this.V.lms]
+      .filter(Boolean).map(o => Phaser.Geom.Rectangle.Inflate(o.getBounds(), 14, 14));
+    const clear = r => !important.some(b => Phaser.Geom.Intersects.RectangleToRectangle(r, b));
+    if (this.has(tk)) for (let i = 0, n = 0; i < 400 && n < 10; i++) {
+      const left = Math.random() < 0.5, x = left ? Phaser.Math.Between(20, 70) : Phaser.Math.Between(WW - 70, WW - 20), y = Phaser.Math.Between(80, WH - 60);
+      if (!ROAD_Y.some(ry => Math.abs(y + 50 - ry) < 80) && clear(new Phaser.Geom.Rectangle(x - 60, y - 65, 120, 130))) {
+        this.shade(x, y + 52, 96); this.trees.push(this.fit(this.add.image(x, y, tk), 130, 130).setDepth(y + 40)); n++;
+      }
+    }
+    // butterflies: two little wings that flap, wandering around
+    for (let i = 0; i < 5; i++) {
+      const b = this.add.image(Phaser.Math.Between(100, WW - 100), Phaser.Math.Between(100, WH - 100), 'butterfly').setDepth(3500).setTint(pick([0xffe066, 0xff9bd2, 0xffffff, 0x9bd8ff]));
+      this.tweens.add({ targets: b, scaleX: 0.25, duration: 130, yoyo: true, repeat: -1 });
+      const go = () => this.tweens.add({ targets: b, x: Phaser.Math.Clamp(b.x + Phaser.Math.Between(-260, 260), 40, WW - 40), y: Phaser.Math.Clamp(b.y + Phaser.Math.Between(-180, 180), 40, WH - 40),
+        duration: Phaser.Math.Between(2200, 4200), ease: 'Sine.inOut', onComplete: go });
+      go();
+    }
+    this.add.image(W / 2, H / 2, 'vignette').setScrollFactor(0).setDepth(4900);
+  }
+  fit(o, w, h) { o.setScale(Math.min(w / o.width, h / o.height)); return o; }
+  // a picture (art or icon) or else an emoji
+  pic(key, emoji, x, y, size) {
+    if (key && this.has(key)) return this.fit(this.add.image(x, y, key), size, size);
+    return this.add.text(x, y, emoji, { fontSize: Math.round(size * 0.8) }).setOrigin(0.5);
+  }
+
+  makeTextures() {
+    if (this.has('gen_house_1')) return;
+    const g = this.make.graphics({ add: false });
+    g.fillStyle(0xffffff, 0).fillRect(0, 0, 4, 4).generateTexture('px', 4, 4).clear();
+    for (let w = 1; w <= 3; w++) {
+      g.fillStyle(0x2b1a0a).fillRect(6, 50, 168, 104).fillStyle(0xf6f1e6).fillRect(10, 54, 160, 96);
+      g.fillStyle(0x2b1a0a).fillTriangle(0, 56, 90, 0, 180, 56).fillStyle(0xc8643c).fillTriangle(8, 52, 90, 6, 172, 52);
+      const xs = w === 1 ? [40] : w === 2 ? [28, 128] : [22, 62, 128];
+      xs.forEach(x => g.fillStyle(0x2b1a0a).fillRect(x, 70, 32, 30).fillStyle(0x7fc3f0).fillRect(x + 3, 73, 26, 24));
+      g.generateTexture('gen_house_' + w, 180, 156).clear();
+    }
+    g.fillStyle(0x2b1a0a).fillRoundedRect(0, 0, 40, 60, 6).fillStyle(0xffffff).fillRoundedRect(3, 3, 34, 57, 5).fillStyle(0x2b1a0a).fillCircle(30, 32, 3).generateTexture('gen_door', 40, 60).clear();
+    g.fillStyle(0x7a5600).fillCircle(14, 14, 14).fillStyle(0xffc400).fillCircle(14, 14, 11).fillStyle(0xfff3a0).fillCircle(10, 10, 4).generateTexture('coin', 28, 28).clear();
+    for (let r = 10; r > 0; r -= 2) g.fillStyle(0xffffff, 0.15).fillCircle(10, 10, r);
+    g.generateTexture('soft', 20, 20).clear();
+    g.fillStyle(0xffffff).fillEllipse(7, 8, 12, 14).fillEllipse(19, 8, 12, 14).fillStyle(0x2b1a0a).fillRect(12, 3, 2, 11).generateTexture('butterfly', 26, 16).clear();
+    // a soft dark frame around the screen
+    const vg = this.textures.createCanvas('vignette', W, H), vx = vg.getContext(), gr = vx.createRadialGradient(W / 2, H / 2, H * 0.45, W / 2, H / 2, H * 1.05);
+    gr.addColorStop(0, 'rgba(20,30,10,0)'); gr.addColorStop(1, 'rgba(20,30,10,0.42)'); vx.fillStyle = gr; vx.fillRect(0, 0, W, H); vg.refresh();
+    g.destroy();
+  }
+
+  makeAnims() {
+    if (!this.has('hero_walk') || this.anims.exists('hero_down')) return;
+    ['down', 'left', 'right', 'up'].forEach((d, r) => this.anims.create({ key: 'hero_' + d, frames: this.anims.generateFrameNumbers('hero_walk', { start: r * 4, end: r * 4 + 3 }), frameRate: 8, repeat: -1 }));
+  }
+
+  create() {
+    Object.assign(this, { delivery: null, done: 0, letter: null, letterNo: 0, busy: false, near: null, trees: [] });
+    this.makeTextures(); this.makeAnims();
+    this.day = DAYS[this.dayIndex];
+    const V = this.V = buildVillage();
+
+    // ground and roads
+    if (this.has('art_grass')) this.add.tileSprite(WW / 2, WH / 2, WW, WH, 'art_grass').setTileScale(0.5);
+    else this.add.rectangle(WW / 2, WH / 2, WW, WH, 0x8fcf6a);
+    // roads: first a soft darker edge under all of them, then the sandy paths on top (so crossings stay clean)
+    const roads = [...ROAD_Y.map(y => [WW / 2, y, WW + 40, 90]), ...ROAD_X.map(x => [x, (ROAD_Y[1] + 30) / 2, 90, ROAD_Y[1] + 70]),
+                   [POST[0], (ROAD_Y[1] + POST[1] + 60) / 2, 90, POST[1] + 60 - ROAD_Y[1]], [POST[0], POST[1] + 60, 520, 120]];
+    const edge = this.add.graphics();
+    roads.forEach(([x, y, w, h]) => edge.fillStyle(0x3d6b22, 0.28).fillRoundedRect(x - w / 2 - 9, y - h / 2 - 9, w + 18, h + 18, 16)
+      .fillStyle(0x8a6a3a, 0.55).fillRoundedRect(x - w / 2 - 4, y - h / 2 - 4, w + 8, h + 8, 12));
+    roads.forEach(([x, y, w, h]) => this.has('art_path') ? this.add.tileSprite(x, y, w, h, 'art_path').setTileScale(0.4) : this.add.rectangle(x, y, w, h, 0xe8d5a8));
+    // soft shadows on the ground make everything stand on it instead of floating
+    const shade = this.shade = (x, y, w, h = w * 0.36, a = 0.24) => this.add.ellipse(x, y, w, h, 0x12300a, a).setDepth(2);
+
+    this.solids = this.physics.add.staticGroup();
+    const solid = (x, y, w, h) => { const z = this.add.zone(x, y, w, h); this.solids.add(z); return z; };
+
+    // houses: walls, roof, a colored door, a number, windows, something in the yard
+    V.houses.forEach(h => {
+      const art = this.has('art_house_' + h.windows);
+      // the art house has its doorway on the right side wall; the painted door is a picture the same size that fills it exactly
+      const dx = art ? 42 : 0, dy = art ? 40 : 52;
+      if (art) {
+        h.img = this.add.image(h.x, h.y, 'art_house_' + h.windows).setScale(190 / 512).setDepth(h.y);
+        h.door = this.add.image(h.x, h.y, 'art_doorfill_' + h.windows).setScale(190 / 512).setDepth(h.y + 1).setTint(h.color[1]);
+      } else {
+        h.img = this.fit(this.add.image(h.x, h.y, 'gen_house_' + h.windows), 190, 170).setDepth(h.y);
+        h.door = this.fit(this.add.image(h.x, h.y + 52, 'gen_door'), 40, 60).setDepth(h.y + 1).setTint(h.color[1]);
+      }
+      const px = art ? h.x - 30 : h.x + 40, py = art ? h.y + 22 : h.y + 40;   // number plate on the front wall
+      this.add.circle(px, py, 15, 0xfff8e6).setStrokeStyle(3, 0x2b1a0a).setDepth(h.y + 2);
+      this.add.text(px, py, String(h.number), { fontFamily: 'Nunito', fontSize: 18, fontStyle: '900', color: '#2b1a0a' }).setOrigin(0.5).setDepth(h.y + 3);
+      if (h.yard) {
+        const y = YARDS[h.yard], yx = art ? h.x - 135 : h.x + 140;
+        const ys = YARD_SIZE[h.yard], yy = h.y + 62 - ys / 2;   // everything stands on the same ground line
+        h.yardImg = this.pic(y[2] ? iconKey(y[2]) : (this.has('art_flowers') ? 'art_flowers' : null), y[3], yx, yy, ys).setDepth(h.y + 30);
+        if (h.yard === 'tree') this.trees.push(h.yardImg);
+        if (h.yard !== 'flowers') shade(yx, yy + ys * 0.44, ys * (h.yard === 'tree' ? 0.8 : 0.9));
+      }
+      if (art) shade(h.x + 6, h.y + 58, 200, 60, 0.26);
+      solid(h.x, h.y - 5, 170, 110);
+      h.spot = { x: h.x + dx, y: h.y + dy + 62 };   // stand here (in front of the door) to deliver
+      h.doorTop = { x: h.x + dx, y: h.y + dy - 30 };
+    });
+    // landmarks
+    V.lms = LM_POS.map(([x, y], i) => {
+      const lm = LANDMARKS[i];
+      const big = lm[0] === 'big tree', o = this.pic(lm[2], lm[3], x, y - (big ? 14 : 6), big ? 136 : 110).setDepth(y + 40);
+      if (big) this.trees.push(o);
+      shade(x, y + (big ? 50 : 44), big ? 120 : 100);
+      solid(x, y + 10, 60, 40);
+      return o;
+    });
+    // people (and their hats and pets)
+    V.people.forEach(p => {
+      this.drawPerson(p);
+      solid(p.x, p.y + 10, 40, 30);
+      p.spot = { x: p.x, y: p.y + 55 };
+    });
+
+    // the post office (the start): a bigger house with a golden door and a sign, and Hermes on his signpost
+    const px = POST[0] - 150, py = POST[1] - 10;
+    if (this.has('art_house_2')) {
+      shade(px + 8, py + 74, 260, 76, 0.26);
+      this.add.image(px, py, 'art_house_2').setScale(250 / 512).setDepth(py);
+      this.add.image(px, py, 'art_doorfill_2').setScale(250 / 512).setDepth(py + 1).setTint(0xffc93b);
+      solid(px, py - 5, 220, 140);
+    }
+    const sign = this.add.graphics().setDepth(py + 3);
+    sign.fillStyle(0x2b1a0a).fillRoundedRect(px - 118, py - 16, 124, 40, 8).fillStyle(0xfff3d6).fillRoundedRect(px - 115, py - 13, 118, 34, 6);
+    this.add.text(px - 56, py + 4, 'POST', { fontFamily: 'Cinzel', fontSize: 24, fontStyle: '900', color: '#2b1a0a' }).setOrigin(0.5).setDepth(py + 4);
+    const hx = POST[0] + 130, hy = POST[1] + 10, post = this.add.graphics().setDepth(hy + 40);
+    shade(hx, hy + 78, 70);
+    post.fillStyle(0x2b1a0a).fillRect(hx - 8, hy + 30, 16, 50).fillStyle(0x9a6b3c).fillRect(hx - 5, hy + 30, 10, 47);
+    post.fillStyle(0x2b1a0a).fillCircle(hx, hy, 58).fillStyle(0xffd43b).fillCircle(hx, hy, 53).fillStyle(0xbfe3ff).fillCircle(hx, hy, 46);
+    this.hermes = this.pic('art_hermes', '🪽', hx, hy + 2, 84).setDepth(hy + 41);
+    this.tweens.add({ targets: this.hermes, y: hy - 1, duration: 1400, yoyo: true, repeat: -1, ease: 'Sine.inOut' });
+    solid(hx, hy + 60, 30, 30);
+    this.decorate();
+
+    // the hero
+    this.player = this.physics.add.image(POST[0], POST[1] + 60, 'px').setVisible(false);
+    this.player.body.setSize(34, 26).setCollideWorldBounds(true);
+    this.physics.world.setBounds(0, 0, WW, WH);
+    this.physics.add.collider(this.player, this.solids);
+    this.animated = this.has('hero_walk');
+    this.heroImg = (this.animated ? this.add.sprite(0, 0, 'hero_walk', 0) : this.add.image(0, 0, 'hero')).setOrigin(0.5, 0.92);
+    this.heroImg.setScale(this.animated ? 104 / 256 : 92 / this.heroImg.height);
+    this.gear = Gear.attach(this, this.heroImg);
+    this.heroShade = this.add.ellipse(0, 0, 46, 16, 0x12300a, 0.3).setDepth(3);
+    this.heroDir = 'down';
+    this.cameras.main.setBounds(0, 0, WW, WH).setZoom(HD).startFollow(this.player, true, 0.12, 0.12);
+    this.uiCam = this.cameras.add(0, 0, Math.round(W * HD), Math.round(H * HD)).setOrigin(0, 0).setZoom(HD);
+
+    this.keys = this.input.keyboard.addKeys({ left: 'LEFT', right: 'RIGHT', up: 'UP', down: 'DOWN', a: 'A', d: 'D', w: 'W', s: 'S',
+      space: 'SPACE', r: 'R', enter: 'ENTER', one: 'ONE', two: 'TWO', three: 'THREE' });
+    this.input.keyboard.on('keydown-ESC', goToCamp);
+    this.sparks = this.add.particles(0, 0, 'soft', { speed: { min: 60, max: 200 }, lifespan: 650, scale: { start: 1.4, end: 0 }, tint: [0xffd43b, 0xfff3a0, 0xffffff], blendMode: 'ADD', emitting: false }).setDepth(3000);
+    this.buildHud();
+    this.recent = [];
+    this.state = 'play';
+    if (this.showTitle) {
+      this.state = 'title';
+      this.overlay('Hermes Express', "Eris mixed up all of Hermes' packages!\nRead each note and bring it to the right house or person.\n\n←  ↑  →  ↓   walk          SPACE   deliver", 'Play', () => this.startDay());
+    } else this.startDay();
+    window.hermes = this; // for testing
+  }
+
+  // =====================================================================
+  //  HUD
+  // =====================================================================
+  buildHud() {
+    const d = 5000, fix = o => o.setScrollFactor(0).setDepth(d);
+    fix(this.add.graphics()).fillStyle(0x2b1a0a).fillRoundedRect(18, 21, 130, 46, 23).fillStyle(0xfff8e6).fillRoundedRect(18, 16, 130, 46, 23).lineStyle(4, 0x2b1a0a).strokeRoundedRect(18, 16, 130, 46, 23);
+    fix(this.add.image(44, 39, 'coin'));
+    this.coinText = fix(this.add.text(68, 22, String(this.coins), { fontFamily: 'Nunito', fontSize: 27, fontStyle: '900', color: '#2b1a0a' }));
+    this.dayText = fix(this.add.text(W - 20, H - 54, '', { fontFamily: 'Cinzel', fontSize: 24, fontStyle: '900', color: '#fff8e6', stroke: '#2b1a0a', strokeThickness: 6 }).setOrigin(1, 1));
+    fix(this.add.text(W - 20, H - 16, '⌂ Camp', { fontFamily: 'Nunito', fontSize: 22, fontStyle: '900', color: '#fff8e6', stroke: '#2b1a0a', strokeThickness: 6 }).setOrigin(1, 1))
+      .setInteractive({ useHandCursor: true }).on('pointerdown', goToCamp);
+    // the note on the package (top)
+    this.noteBg = fix(this.add.graphics());
+    this.noteItem = null;
+    this.noteText = fix(this.add.text(W / 2 + 40, 70, '', { fontFamily: 'Nunito', fontSize: 30, fontStyle: '900', color: '#2b1a0a', align: 'center', wordWrap: { width: 820 }, lineSpacing: 4 }).setOrigin(0.5));
+    this.noteHe = fix(this.add.text(W / 2, 150, '', { fontFamily: 'Nunito', fontSize: 26, fontStyle: '900', color: '#ffe066', stroke: '#2b1a0a', strokeThickness: 6, align: 'center' }).setOrigin(0.5, 0).setVisible(false));
+    this.listen = fix(this.add.text(W / 2 + 470, 70, '🔊', { fontSize: 34, backgroundColor: '#fff8e6', padding: { x: 6, y: 2 } }).setOrigin(0.5)).setVisible(false)
+      .setInteractive({ useHandCursor: true }).on('pointerdown', () => this.readAloud());
+    this.tip = this.add.text(0, 0, 'SPACE', { fontFamily: 'Nunito', fontSize: 22, fontStyle: '900', color: '#ffffff', backgroundColor: '#7b5cd6', padding: { x: 10, y: 3 } }).setOrigin(0.5).setDepth(4000).setVisible(false);
+  }
+
+  showNote() {
+    const dl = this.delivery;
+    this.noteText.setText(dl.en);
+    const h = Math.max(90, this.noteText.height + 36);
+    this.noteBg.clear().fillStyle(0x2b1a0a).fillRoundedRect(W / 2 - 470, 70 - h / 2 + 6, 940, h, 18).fillStyle(0xfff3d6).fillRoundedRect(W / 2 - 470, 70 - h / 2, 940, h, 18).lineStyle(5, 0x2b1a0a).strokeRoundedRect(W / 2 - 470, 70 - h / 2, 940, h, 18);
+    if (this.noteItem) this.noteItem.destroy();
+    const it = dl.item[2];
+    this.noteItem = this.pic(it.startsWith('art_') ? it : /^[a-z]/.test(it) ? iconKey(it) : null, { art_scroll: '✉️', art_package: '📦' }[it] || it, W / 2 - 420, 70, 60).setScrollFactor(0).setDepth(5001);
+    this.noteHe.setText(dl.he).setY(70 + h / 2 + 10).setVisible(dl.mistakes >= 2);
+    this.listen.setVisible(dl.mistakes >= 1);
+    this.dayText.setText(`${this.day.name}  ·  ${this.done + 1}/${this.day.deliveries}`);
+    this.tweens.add({ targets: [this.noteText], scale: { from: 0.85, to: 1 }, duration: 250, ease: 'Back.out' });
+    sfx.page();
+  }
+  readAloud() {
+    const t = this.letter ? this.letterSentences() : this.delivery && this.delivery.en;
+    if (t) sayH(t);
+  }
+
+  floatText(txt, x, y, color = '#ffe066', size = 30, onScreen = false) {
+    const t = this.add.text(x, y, txt, { fontFamily: 'Nunito', fontSize: size, fontStyle: '900', color, stroke: '#2b1a0a', strokeThickness: 6 }).setOrigin(0.5).setDepth(onScreen ? 7000 : 4500);
+    if (onScreen) t.setScrollFactor(0);
+    this.tweens.add({ targets: t, y: y - 70, alpha: { from: 1, to: 0 }, duration: 1300, ease: 'Quad.out', onComplete: () => t.destroy() });
+    return t;
+  }
+  addCoins(n, x, y) {
+    for (let k = 0; k < n; k++) this.time.delayedCall(k * 70, () => { this.coins++; this.coinText.setText(String(this.coins)); Save.addCoins(1); sfx.coin(); });
+    if (x !== undefined) this.sparks.explode(10 + n * 2, x, y);
+  }
+
+  overlay(title, text, btn, onClick) {
+    const o = this.add.container(0, 0).setDepth(9000);
+    o.add(this.add.rectangle(W / 2, H / 2, W, H, 0x050f1e, 0.8).setInteractive());
+    o.add(this.add.text(W / 2, 180, title, { fontFamily: 'Cinzel', fontSize: 76, fontStyle: '900', color: '#ffd43b', stroke: '#6b4400', strokeThickness: 10 }).setOrigin(0.5));
+    o.add(this.add.text(W / 2, 340, text, { fontFamily: 'Nunito', fontSize: 27, fontStyle: '700', color: '#ffffff', align: 'center', lineSpacing: 6 }).setOrigin(0.5));
+    const b = this.add.container(W / 2, 530);
+    b.add([this.add.graphics().fillStyle(0x2b1a0a).fillRoundedRect(-160, -32, 320, 76, 38).fillStyle(0xffd43b).fillRoundedRect(-160, -40, 320, 76, 38).lineStyle(5, 0x2b1a0a).strokeRoundedRect(-160, -40, 320, 76, 38),
+           this.add.text(0, -2, btn, { fontFamily: 'Cinzel', fontSize: 36, fontStyle: '900', color: '#2b1a0a' }).setOrigin(0.5)]);
+    const go = () => { if (!o.active) return; o.destroy(); onClick(); };
+    b.setSize(320, 76).setInteractive({ useHandCursor: true }).on('pointerdown', go).on('pointerover', () => b.setScale(1.06)).on('pointerout', () => b.setScale(1));
+    this.keys.enter.once('down', go);
+    o.add(b);
+    [o, b, ...o.list, ...b.list].forEach(c => c.setScrollFactor(0));
+  }
+
+  banner(title, sub) {
+    const t = this.add.text(W / 2, 300, title, { fontFamily: 'Cinzel', fontSize: 84, fontStyle: '900', color: '#ffd43b', stroke: '#6b4400', strokeThickness: 10 }).setOrigin(0.5).setDepth(8000).setScrollFactor(0);
+    const s = this.add.text(W / 2, 390, sub, { fontFamily: 'Nunito', fontSize: 36, fontStyle: '900', color: '#fff', stroke: '#2b1a0a', strokeThickness: 7 }).setOrigin(0.5).setDepth(8000).setScrollFactor(0);
+    this.tweens.add({ targets: [t, s], scale: { from: 0.4, to: 1 }, duration: 400, ease: 'Back.out' });
+    this.tweens.add({ targets: [t, s], alpha: 0, delay: 1600, duration: 400, onComplete: () => { t.destroy(); s.destroy(); } });
+  }
+
+  // =====================================================================
+  //  DELIVERIES
+  // =====================================================================
+  startDay() {
+    this.state = 'play';
+    this.banner(this.day.name, this.day.sub);
+    if (this.dayIndex === 0) sayH('Hi! I am Hermes. Can you help me?');
+    if (this.day.boss) { this.erisRound = 0; sayH('Oh no! Eris is hiding in the village. Can you find her?'); }
+    this.time.delayedCall(1200, () => this.nextDelivery());
+  }
+
+  nextDelivery() {
+    this.delivery = this.day.boss ? makeEris(this.erisRound, this.V) : makeDelivery(this.dayIndex, this.V, this.recent);
+    if (this.delivery.redressed) this.V.people.forEach(p => this.drawPerson(p));
+    this.recent.push(this.delivery.target); if (this.recent.length > 4) this.recent.shift();
+    this.showNote();
+  }
+
+  // what is she standing in front of?
+  findNear() {
+    const all = [...this.V.houses, ...this.V.people];
+    let best = null, bd = 75;
+    for (const o of all) { const d = Phaser.Math.Distance.Between(o.spot.x, o.spot.y, this.player.x, this.player.y); if (d < bd) { bd = d; best = o; } }
+    return best;
+  }
+
+  deliver(o) {
+    const dl = this.delivery;
+    if (!dl || this.busy) return;
+    sfx.knock();
+    if (dl.eris) return this.catchEris(o);
+    if (o === dl.target) {
+      this.busy = true; sfx.good();
+      const x = o.kind === 'house' ? o.doorTop.x : o.img.x, y = o.kind === 'house' ? o.doorTop.y - 30 : o.img.y - 60;
+      const who = o.kind === 'house' ? o.owner : o.type, line = pick(VILLAGER_LINES[who].thanks);
+      this.floatText(line, x, y, '#ffe066', 32);
+      this.addCoins(dl.mistakes ? 2 : 5, x, y);
+      if (o.kind === 'person') this.tweens.add({ targets: [o.img, o.hatImg, o.petImg].filter(Boolean), y: '-=24', duration: 160, yoyo: true, repeat: 1 });
+      else this.tweens.add({ targets: o.door, alpha: 0.15, duration: 200, yoyo: true });   // the door opens for a moment
+      sayV(who, line);
+      this.done++;
+      this.time.delayedCall(1100, () => {
+        this.busy = false;
+        if (this.done >= this.day.deliveries) this.endDay(); else this.nextDelivery();
+      });
+    } else {
+      dl.mistakes++; sfx.wrong();
+      this.cameras.main.shake(120, 0.004);
+      const who = o.kind === 'house' ? o.owner : o.type, line = VILLAGER_LINES[who].wrong;
+      this.floatText(line + ' Read again.', this.player.x, this.player.y - 90, '#ff9b9b', 28);
+      sayV(who, line);
+      this.showNote();   // same note again; after a mistake: 🔊, after two: Hebrew
+    }
+  }
+
+  // ---------- the boss: find Eris among the villagers ----------
+  catchEris(o) {
+    const dl = this.delivery;
+    if (o !== dl.target) {
+      dl.mistakes++; sfx.wrong();
+      this.cameras.main.shake(120, 0.004);
+      this.floatText(o.kind === 'house' ? 'Eris is not in a house! Read again.' : 'I am not Eris! Read again.', this.player.x, this.player.y - 90, '#ff9b9b', 28);
+      sayH(o.kind === 'house' ? 'Eris is not in a house!' : 'That is not Eris!');
+      return this.showNote();
+    }
+    this.busy = true; sfx.good();
+    const x = o.x, y = o.y;
+    // the disguise falls off: a puff, and Eris is there
+    const old = [o.img, o.hatImg, o.petImg].filter(Boolean);
+    this.tweens.add({ targets: old, alpha: 0, duration: 250 });
+    this.sparks.explode(30, x, y - 20);
+    const eris = this.pic('art_eris', '🦹‍♀️', x, y - 12, 115).setDepth(y + 60).setAlpha(0);
+    this.tweens.add({ targets: eris, alpha: 1, scale: { from: eris.scale * 0.4, to: eris.scale }, duration: 350, ease: 'Back.out' });
+    this.addCoins(dl.mistakes ? 2 : 5, x, y - 40);
+    this.erisRound++; this.done++;
+    const last = this.erisRound >= ERIS_ROUNDS.length;
+    this.floatText(last ? 'OK, OK! You win!' : 'You found me! But catch me again!', x, y - 80, '#e599f7', 32);
+    sayH(last ? 'You caught Eris!' : 'You found her!');
+    this.time.delayedCall(1700, () => {
+      if (last) return this.erisDone(eris);
+      // Eris runs away and mixes everyone up again
+      this.tweens.add({ targets: eris, alpha: 0, y: y - 60, duration: 400, onComplete: () => eris.destroy() });
+      this.V.people.forEach(p => { dress(p); this.drawPerson(p); this.sparks.explode(6, p.x, p.y - 20); });
+      this.floatText('Eris mixed everyone up!', W / 2, H / 2, '#e599f7', 40, true);
+      sfx.page();
+      this.time.delayedCall(900, () => { this.busy = false; this.nextDelivery(); });
+    });
+  }
+  erisDone(eris) {
+    this.delivery = null;
+    this.noteBg.clear(); this.noteText.setText(''); this.noteHe.setVisible(false); this.listen.setVisible(false); if (this.noteItem) this.noteItem.destroy();
+    Save.markDone('hermes', DAYS.length);
+    sfx.win(); sayH('You are the best helper!');
+    this.time.delayedCall(800, () => this.overlay('You caught Eris!', `Eris promised: no more mixing up!
+Every package reached the right place.
+Hermes says you are the best helper in Olympus!
+
+Drachmas: ${this.coins}`, 'Back to camp', goToCamp));
+  }
+
+  endDay() {
+    this.state = 'letters';
+    this.delivery = null;
+    this.noteBg.clear(); this.noteText.setText(''); this.noteHe.setVisible(false); this.listen.setVisible(false); if (this.noteItem) this.noteItem.destroy();
+    sfx.win(); this.banner('Great job!', 'Oh no! Eris mixed up some letters…');
+    sayH('Great job!');
+    this.time.delayedCall(2300, () => this.startLetters());
+  }
+
+  // =====================================================================
+  //  FIX THE LETTER
+  // =====================================================================
+  startLetters() { this.letterNo = 0; this.nextLetter(); }
+
+  letterSentences() { return this.letter.words.slice(1, 3).map(l => l.join(' ')).join(' '); }
+
+  nextLetter() {
+    if (this.letterUi) this.letterUi.forEach(o => o.destroy());
+    if (this.letterNo >= LETTERS_PER_BREAK) return this.afterLetters();
+    this.letterNo++;
+    const L = this.letter = makeLetter();
+    this.letterDone = false;
+    const ui = this.letterUi = [];
+    const add = o => { o.setScrollFactor(0).setDepth(6000); ui.push(o); return o; };
+    add(this.add.rectangle(W / 2, H / 2, W, H, 0x050f1e, 0.65).setInteractive());
+    add(this.add.text(W / 2, 34, `Find the wrong word!   (${this.letterNo}/${LETTERS_PER_BREAK})`, { fontFamily: 'Cinzel', fontSize: 34, fontStyle: '900', color: '#ffd43b', stroke: '#2b1a0a', strokeThickness: 7 }).setOrigin(0.5));
+    // the picture: what is really true
+    add(this.add.graphics()).fillStyle(0x2b1a0a).fillRoundedRect(70, 96, 440, 470, 22).fillStyle(0xfff8e6).fillRoundedRect(74, 100, 432, 462, 20);
+    const t = L.truth;
+    for (let i = 0; i < t.n; i++) add(this.pic(iconKey(t.a), '?', 120 + (i % 3) * 120 + (t.n === 2 ? 60 : 0) + (t.n === 4 && i >= 3 ? 60 : 0), 170 + Math.floor(i / 3) * 100, 90));
+    const tx = 290, ty = 440;
+    const treeImg = add(this.pic(iconKey('tree'), '🌳', tx, ty, 170));
+    const bp = t.prep === 'under' ? [tx - 10, ty + 70] : t.prep === 'on' ? [tx - 5, ty - 55] : [tx + 140, ty + 45];
+    const b = add(this.pic(iconKey(t.b), '?', bp[0], bp[1], t.prep === 'on' ? 66 : 76));
+    if (t.prep === 'under') b.setDepth(6001);
+    // the letter on parchment, every word can be clicked
+    add(this.add.graphics()).fillStyle(0x2b1a0a).fillRoundedRect(560, 96, 650, 470, 22).fillStyle(0xfff3d6).fillRoundedRect(564, 100, 642, 462, 20);
+    add(this.add.text(W / 2, 72, '👆 Click on the wrong word', { fontFamily: 'Nunito', fontSize: 22, fontStyle: '900', color: '#fff8e6' }).setOrigin(0.5));
+    this.letterLines = L.words.map((line, li) => line.map((w, wi) => {
+      const o = { state: '' };
+      if (li === 1 || li === 2) o.chip = add(this.add.graphics());
+      o.tw = add(this.add.text(0, 0, w, { fontFamily: 'Nunito', fontSize: 36, fontStyle: '900', color: '#2b1a0a', padding: { x: 4, y: 3 } }));
+      if (o.chip) {
+        o.tw.setInteractive({ useHandCursor: true }).on('pointerdown', () => this.pickWord(li, wi, o))
+          .on('pointerover', () => { if (!o.state) { o.state = 'hover'; this.drawChips(); } })
+          .on('pointerout', () => { if (o.state === 'hover') { o.state = ''; this.drawChips(); } });
+      }
+      return o;
+    }));
+    this.layoutLetter();
+    this.letterHe = add(this.add.text(W / 2, 600, L.he, { fontFamily: 'Nunito', fontSize: 26, fontStyle: '900', color: '#ffe066', stroke: '#2b1a0a', strokeThickness: 6 }).setOrigin(0.5).setVisible(false));
+    this.letterListen = add(this.add.text(W / 2 + 330, 34, '🔊', { fontSize: 32, backgroundColor: '#fff8e6', padding: { x: 6, y: 2 } }).setOrigin(0.5).setVisible(false)
+      .setInteractive({ useHandCursor: true }).on('pointerdown', () => this.readAloud()));
+    this.optionUi = [];
+    sfx.page();
+    if (this.letterNo === 1 && this.dayIndex === 0) sayH('Find the wrong word!');
+  }
+
+  // place the letter's words in lines (again after a word changes); words that can be clicked get a little button behind them
+  layoutLetter() {
+    const LEFT = 604, RIGHT = 1170;
+    let y = 140;
+    this.letterLines.forEach((line, li) => {
+      let x = LEFT;
+      line.forEach(o => {
+        const w = o.tw.width;
+        if (x + w > RIGHT && x > LEFT) { x = LEFT; y += 56; }
+        o.tw.setPosition(x, y);
+        x += w + (o.chip ? 16 : 12);
+      });
+      y += li === 0 ? 66 : 62;
+    });
+    this.drawChips();
+  }
+  drawChips() {
+    this.letterLines.flat().forEach(o => {
+      if (!o.chip) return;
+      const t = o.tw, st = o.state;   // '' | 'hover' | 'bad' | 'good'
+      const fill = st === 'bad' ? 0xffd6d6 : st === 'good' ? 0xd3f9d8 : st === 'hover' ? 0xffd66b : 0xffecb3;
+      const edge = st === 'bad' ? 0xd62828 : st === 'good' ? 0x2f9e44 : 0xc9962e;
+      o.chip.clear().fillStyle(edge).fillRoundedRect(t.x - 4, t.y + 2, t.width + 8, t.height + 2, 10)
+        .fillStyle(fill).fillRoundedRect(t.x - 2, t.y, t.width + 4, t.height - 2, 9);
+    });
+  }
+
+  pickWord(line, idx, o) {
+    const L = this.letter, tw = o.tw;
+    if (this.optionUi.length || this.letterDone) return;
+    if (line === L.bad.line && idx === L.bad.idx) {
+      tw.setColor('#d62828'); o.state = 'bad'; this.drawChips(); sfx.page();
+      this.showOptions(o);
+    } else {
+      this.letterMistake();
+      this.tweens.add({ targets: tw, x: tw.x + 6, duration: 50, yoyo: true, repeat: 3, onUpdate: () => this.drawChips() });
+      this.floatText('This word is OK!', tw.x + tw.width / 2, tw.y - 10, '#ff9b9b', 26, true);
+    }
+  }
+
+  // the three choices sit inside the parchment, under the letter
+  showOptions(o) {
+    const L = this.letter, cx = 885, y = 500;
+    this.optionUi.push(...[this.add.text(cx, y - 62, 'Which word is right?', { fontFamily: 'Nunito', fontSize: 24, fontStyle: '900', color: '#7b5cd6' }).setOrigin(0.5)]);
+    L.options.forEach((w, i) => {
+      const x = cx + (i - 1) * 196;
+      const bg = this.add.graphics().fillStyle(0x2b1a0a).fillRoundedRect(x - 88, y - 26, 176, 58, 16).fillStyle(0x7b5cd6).fillRoundedRect(x - 88, y - 32, 176, 58, 16);
+      const t = this.add.text(x, y - 4, `${i + 1}. ${w.replace('.', '')}`, { fontFamily: 'Nunito', fontSize: 28, fontStyle: '900', color: '#ffffff' }).setOrigin(0.5);
+      const zone = this.add.zone(x, y - 4, 176, 60).setInteractive({ useHandCursor: true }).on('pointerdown', () => this.chooseOption(w, o))
+        .on('pointerover', () => t.setScale(1.08)).on('pointerout', () => t.setScale(1));
+      this.optionUi.push(bg, t, zone);
+    });
+    this.optionUi.forEach(u => { u.setScrollFactor(0).setDepth(6002); this.letterUi.push(u); });
+  }
+
+  chooseOption(w, o) {
+    const L = this.letter, tw = o.tw;
+    if (this.letterDone) return;
+    if (w === L.right) {
+      this.letterDone = true;
+      tw.setText(w).setColor('#2f9e44'); o.state = 'good'; sfx.good();
+      this.layoutLetter();   // the sentence closes up around the new word
+      this.optionUi.forEach(u => u.destroy()); this.optionUi = [];
+      this.addCoins(L.mistakes ? 2 : 4);
+      this.floatText(L.mistakes ? 'Good!' : 'Perfect!', tw.x + tw.width / 2, tw.y - 10, '#2f9e44', 34, true);
+      this.time.delayedCall(1300, () => this.nextLetter());
+    } else {
+      this.letterMistake();
+    }
+  }
+
+  letterMistake() {
+    const L = this.letter; L.mistakes++; sfx.wrong();
+    this.cameras.main.shake(100, 0.003);
+    if (L.mistakes >= 1) this.letterListen.setVisible(true);
+    if (L.mistakes >= 2) this.letterHe.setVisible(true);
+  }
+
+  afterLetters() {
+    this.letter = null;
+    Save.markDone('hermes', this.dayIndex + 1);
+    const next = this.dayIndex + 1;
+    if (next < DAYS.length) {
+      this.banner('Day complete!', DAYS[next].boss ? 'Tomorrow: find Eris!' : 'See you tomorrow!');
+      this.time.delayedCall(2200, () => this.cameras.main.fadeOut(400));
+      this.time.delayedCall(2700, () => this.scene.restart({ day: next, coins: this.coins, title: false }));
+    } else {
+      sfx.win(); sayH('You are the best helper!');
+      this.overlay('Thank you!', `Every package reached the right place.\nHermes says you are the best helper in Olympus!\n\nDrachmas: ${this.coins}`, 'Back to camp', goToCamp);
+    }
+  }
+
+  // =====================================================================
+  //  UPDATE
+  // =====================================================================
+  update(time, deltaMs) {
+    hdTick(this, this.uiCam);
+    const k = this.keys;
+    let vx = 0, vy = 0;
+    if (this.state === 'play' && !this.busy) {
+      if (k.left.isDown || k.a.isDown) vx -= 1;
+      if (k.right.isDown || k.d.isDown) vx += 1;
+      if (k.up.isDown || k.w.isDown) vy -= 1;
+      if (k.down.isDown || k.s.isDown) vy += 1;
+    }
+    const len = Math.hypot(vx, vy) || 1;
+    this.player.setVelocity(vx / len * SPEED, vy / len * SPEED);
+    const moving = vx || vy;
+    if (moving) this.heroDir = Math.abs(vx) > Math.abs(vy) ? (vx < 0 ? 'left' : 'right') : (vy < 0 ? 'up' : 'down');
+    const h = this.heroImg;
+    h.setPosition(this.player.x, this.player.y + 12).setDepth(this.player.y + 45);
+    this.heroShade.setPosition(this.player.x, this.player.y + 8);
+    const hr = new Phaser.Geom.Rectangle(this.player.x - 22, this.player.y - 90, 44, 100);
+    this.trees.forEach(t => {
+      const b = Phaser.Geom.Rectangle.Inflate(t.getBounds(), -12, -12);
+      const behind = h.depth < t.depth && Phaser.Geom.Intersects.RectangleToRectangle(hr, b);
+      t.alpha += ((behind ? 0.45 : 1) - t.alpha) * 0.2;
+    });
+    if (this.animated) {
+      if (moving) { if (h.anims.currentAnim?.key !== 'hero_' + this.heroDir || !h.anims.isPlaying) h.play('hero_' + this.heroDir); }
+      else { h.anims.stop(); h.setFrame(['down', 'left', 'right', 'up'].indexOf(this.heroDir) * 4); }
+    }
+
+    if (this.state === 'play') {
+      this.near = this.findNear();
+      this.tip.setVisible(!!this.near && !this.busy);
+      if (this.near) this.tip.setPosition(this.near.spot.x, this.near.spot.y - (this.near.kind === 'house' ? 150 : 120));
+      if (Phaser.Input.Keyboard.JustDown(k.space) && this.near) this.deliver(this.near);
+      if (Phaser.Input.Keyboard.JustDown(k.r) && this.delivery && this.delivery.mistakes >= 1) this.readAloud();
+    } else this.tip.setVisible(false);
+
+    if (this.state === 'letters' && this.letter) {
+      if (this.optionUi.length) {
+        [k.one, k.two, k.three].forEach((key, i) => { if (Phaser.Input.Keyboard.JustDown(key) && this.letter.options[i]) {
+          const o = this.letterLines.flat().find(o => o.state === 'bad'); this.chooseOption(this.letter.options[i], o); } });
+      }
+      if (Phaser.Input.Keyboard.JustDown(k.r) && this.letter.mistakes >= 1) this.readAloud();
+    }
+  }
+}
+
+Promise.all([document.fonts.load('900 40px Cinzel'), document.fonts.load('900 20px Nunito'), loadManifest()]).catch(() => {}).then(() => {
+  new Phaser.Game({
+    type: Phaser.AUTO, parent: 'game', backgroundColor: '#0d1b2a',
+    render: { antialias: true, mipmapFilter: 'LINEAR_MIPMAP_LINEAR' },
+    physics: { default: 'arcade', arcade: { debug: false } },
+    scale: { mode: Phaser.Scale.FIT, autoCenter: Phaser.Scale.CENTER_BOTH, width: Math.round(W * HD), height: Math.round(H * HD) },
+    scene: Village,
+  });
+});
+</script>
+</body>
+</html>

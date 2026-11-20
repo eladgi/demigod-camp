@@ -1,0 +1,738 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Demigod Trials</title>
+<link href="https://fonts.googleapis.com/css2?family=Cinzel:wght@700;900&family=Nunito:wght@700;900&display=swap" rel="stylesheet">
+<style>
+  html, body { margin: 0; height: 100%; background: #0d1b2a; overflow: hidden; }
+  #game { width: 100%; height: 100%; }
+</style>
+<script src="https://cdn.jsdelivr.net/npm/phaser@3.80.1/dist/phaser.min.js"></script>
+<script src="common.js"></script>
+<script src="phrases.js"></script>
+</head>
+<body>
+<div id="game"></div>
+<script>
+// =====================================================================
+//  CONTENT
+// =====================================================================
+// words come from common.js (WORDS): [english, emoji, hebrew, hebrew gender]
+const NOUNS = WORDS;
+const PLURAL = PLURALS;   // from phrases.js
+const NUMBER_WORDS = { 1: 'one', 2: 'two', 3: 'three' };
+// color: [english, fill, outline, hebrew m, hebrew f]
+const COLORS = [
+  ['red', 0xe84545, 0x7a1414, 'אדום', 'אדומה'], ['blue', 0x3b82f6, 0x123d7a, 'כחול', 'כחולה'],
+  ['green', 0x3fbf6f, 0x145a2c, 'ירוק', 'ירוקה'], ['yellow', 0xffd43b, 0x8a6a00, 'צהוב', 'צהובה'],
+  ['orange', 0xff8a1f, 0x8a3d00, 'כתום', 'כתומה'], ['purple', 0x9b5de5, 0x4a1d7a, 'סגול', 'סגולה'],
+  ['pink', 0xff7eb6, 0x9a2a5e, 'ורוד', 'ורודה'], ['black', 0x2b2b2b, 0x000000, 'שחור', 'שחורה'],
+  ['white', 0xf5f5f5, 0x7a7a7a, 'לבן', 'לבנה'],
+];
+const COMMANDS = [
+  { id: 'jump',  text: 'Jump!',      he: 'קפצי!' },
+  { id: 'left',  text: 'Go left!',   he: 'לכי שמאלה!' },
+  { id: 'right', text: 'Go right!',  he: 'לכי ימינה!' },
+];
+// speed: how fast orbs drift. limit: ms per order. counts: "Hit two cats!" orders.
+const WAVES = [
+  { name: 'Trial 1', sub: 'Strike the monster orbs!', orbs: 5, need: 8,  speed: 1.0,  limit: 9000 },
+  { name: 'Trial 2', sub: 'Colors!',                  orbs: 6, need: 8,  speed: 1.25, limit: 8000, colors: true },
+  { name: 'Trial 3', sub: 'Count them!',              orbs: 7, need: 6,  speed: 1.25, limit: 11000, counts: true },
+  { name: 'Trial 4', sub: 'Listen to the Oracle!',    orbs: 6, need: 10, speed: 1.5,  limit: 7000, colors: true, cmds: true, counts: true },
+  { name: 'Boss', sub: 'The Hydra!', boss: true, need: 6, speed: 1.3, limit: 8000 },
+];
+const MAX_HEARTS = 3;
+
+// =====================================================================
+//  WORLD
+// =====================================================================
+const W = 1280, H = 720;
+const FLOOR_Y = 610;          // top of the marble pier
+const PIER_END = 900;         // the hero can't go past this (sea beyond)
+const ORB_BAND = { x1: 80, x2: 1000, y1: 290, y2: 540 };
+const PLATFORMS = [ { x: 300, y: 475, w: 210 }, { x: 640, y: 405, w: 190 } ];
+const HYDRA = { scale: 0.62, x: 1095, y: 770, size: { w: 640, h: 691 },
+  images: { 3: 'hydra3', 2: 'hydra2', 1: 'hydra1' },
+  cut: { 3: { x: 470, y: 215 }, 2: { x: 65, y: 270 }, 1: { x: 290, y: 85 } } };
+
+// =====================================================================
+//  AUDIO
+// =====================================================================
+let ac;
+function tone(f1, f2, dur, type = 'square', vol = .1) {
+  try {
+    ac = ac || new AudioContext(); const o = ac.createOscillator(), g = ac.createGain(); o.type = type;
+    o.frequency.setValueAtTime(f1, ac.currentTime); o.frequency.exponentialRampToValueAtTime(f2, ac.currentTime + dur);
+    g.gain.setValueAtTime(vol, ac.currentTime); g.gain.exponentialRampToValueAtTime(.001, ac.currentTime + dur);
+    o.connect(g).connect(ac.destination); o.start(); o.stop(ac.currentTime + dur);
+  } catch (e) {}
+}
+const sfx = {
+  swing: () => tone(700, 250, .1, 'sawtooth', .05),
+  pop:   () => { tone(500, 1400, .12, 'triangle', .12); },
+  coin:  () => { tone(988, 988, .06, 'square', .04); setTimeout(() => tone(1319, 1319, .12, 'square', .04), 60); },
+  wrong: () => { tone(300, 200, .12, 'square', .08); setTimeout(() => tone(220, 150, .18, 'square', .08), 110); },
+  hurt:  () => tone(220, 70, .35, 'sawtooth', .12),
+  jump:  () => tone(300, 700, .12, 'triangle', .07),
+  warn:  () => tone(900, 900, .08, 'square', .05),
+  roar:  () => { tone(120, 55, .8, 'sawtooth', .14); tone(170, 80, .8, 'square', .05); },
+  boom:  () => tone(160, 40, .35, 'sawtooth', .12),
+  good:  () => [659, 988].forEach((f, i) => setTimeout(() => tone(f, f, .12, 'square', .06), i * 90)),
+  win:   () => [523, 659, 784, 1047].forEach((f, i) => setTimeout(() => tone(f, f, .25, 'square', .07), i * 140)),
+};
+
+// =====================================================================
+//  SCENE
+// =====================================================================
+class Arena extends Phaser.Scene {
+  constructor() { super('arena'); }
+
+  preload() {
+    Gear.preload(this);   // pet / crown from Hermes' Shop
+    this.load.on('loaderror', f => console.info('missing art, using fallback:', f.key));
+    this.load.image('bg', 'assets/sea_bg.jpg');
+    this.load.image('hero', 'assets/hero.png');
+    if (assetExists('assets/sprites/hero_walk.png')) this.load.spritesheet('hero_walk', 'assets/sprites/hero_walk.png', { frameWidth: 256, frameHeight: 256 });
+    if (assetExists('assets/sprites/hero_jump.png')) this.load.image('hero_jump', 'assets/sprites/hero_jump.png');
+    this.load.image('hydra3', 'assets/hydra_full.png');
+    if (assetExists('assets/hydra_2heads.png')) this.load.image('hydra2', 'assets/hydra_2heads.png');
+    if (assetExists('assets/hydra_1head.png')) this.load.image('hydra1', 'assets/hydra_1head.png');
+    NOUNS.forEach(n => { if (assetExists(iconFile(n[0]))) this.load.image(iconKey(n[0]), iconFile(n[0])); });
+  }
+
+  // ---------- generated art (placeholders until Nano Banana versions exist) ----------
+  makeTextures() {
+    const g = this.make.graphics({ add: false });
+    g.fillStyle(0xffffff).fillCircle(8, 8, 8).generateTexture('dot', 16, 16).clear();
+    g.fillStyle(0x7a5600).fillCircle(15, 15, 15).fillStyle(0xffc400).fillCircle(15, 15, 12).fillStyle(0xfff3a0).fillCircle(11, 11, 4).generateTexture('coin', 30, 30).clear();
+    for (let r = 40; r > 0; r -= 4) g.fillStyle(0xffffff, 0.08).fillCircle(40, 40, r);
+    g.generateTexture('smoke', 80, 80).clear();
+    g.fillStyle(0xffffff, 0).fillRect(0, 0, 4, 4).generateTexture('px', 4, 4).clear();
+    // slash crescent
+    g.lineStyle(14, 0xffffff, 1).beginPath().arc(70, 80, 62, Phaser.Math.DegToRad(-80), Phaser.Math.DegToRad(80)).strokePath();
+    g.lineStyle(6, 0xbfe9ff, 1).beginPath().arc(62, 80, 62, Phaser.Math.DegToRad(-70), Phaser.Math.DegToRad(70)).strokePath();
+    g.generateTexture('slash', 150, 160).clear();
+    // fireball
+    g.fillStyle(0xff5a1f).fillCircle(22, 22, 22).fillStyle(0xffa62b).fillCircle(22, 22, 15).fillStyle(0xfff3a0).fillCircle(20, 20, 7).generateTexture('fire', 44, 44).clear();
+    // orbs in each color
+    COLORS.forEach(([name, fill, line]) => {
+      g.fillStyle(0x000000, 0.25).fillCircle(50, 56, 44);
+      g.fillStyle(line).fillCircle(50, 50, 46).fillStyle(fill).fillCircle(50, 50, 40);
+      g.fillStyle(0xffffff, 0.35).fillEllipse(36, 32, 26, 16);
+      g.fillStyle(0xffffff, 0.92).fillCircle(50, 52, 29);
+      g.generateTexture('orb_' + name, 100, 110).clear();
+    });
+    g.destroy();
+    // marble pier and floating platforms: painted on canvases (shaded blocks, a few cracks, moss, a thick top slab)
+    let seed = 11; const rnd = () => (seed = (seed * 16807) % 2147483647) / 2147483647;
+    const rr = (x, X, Y, w, h, r) => { x.beginPath(); x.moveTo(X + r, Y); x.arcTo(X + w, Y, X + w, Y + h, r); x.arcTo(X + w, Y + h, X, Y + h, r); x.arcTo(X, Y + h, X, Y, r); x.arcTo(X, Y, X + w, Y, r); x.closePath(); };
+    const slab = (x, X, Y, w, h) => {   // a thick light stone slab with a highlight and a darker underside
+      x.fillStyle = '#2b1a0a'; rr(x, X, Y, w, h, 8); x.fill();
+      const gr = x.createLinearGradient(0, Y, 0, Y + h); gr.addColorStop(0, '#fffaf0'); gr.addColorStop(0.55, '#eadfc6'); gr.addColorStop(1, '#b9a985');
+      x.fillStyle = gr; rr(x, X + 3, Y + 3, w - 6, h - 7, 6); x.fill();
+      x.fillStyle = 'rgba(255,255,255,0.9)'; rr(x, X + 8, Y + 5, w - 16, 3, 1.5); x.fill();
+      x.fillStyle = 'rgba(120,100,70,0.35)'; for (let i = X + 40 + rnd() * 30; i < X + w - 30; i += 70 + rnd() * 50) x.fillRect(i, Y + 9, 2, h - 16);
+    };
+    if (this.textures.exists('pier')) this.textures.remove('pier');
+    const PH = H - FLOOR_Y, pc = this.textures.createCanvas('pier', PIER_END, PH), x = pc.getContext();
+    x.fillStyle = '#4a3c2e'; x.fillRect(0, 0, PIER_END, PH);
+    for (let y = 26, r = 0; y < PH; y += 40, r++) for (let bx = -45 + (r % 2) * 45; bx < PIER_END; bx += 90) {
+      const t = rnd(), light = 198 + t * 26;
+      x.fillStyle = `rgb(${light + 14},${light + 4},${light - 22})`; rr(x, bx + 3, y + 3, 84, 34, 6); x.fill();
+      x.fillStyle = 'rgba(255,255,255,0.45)'; rr(x, bx + 7, y + 5, 76, 4, 2); x.fill();
+      x.fillStyle = 'rgba(90,70,40,0.28)'; rr(x, bx + 3, y + 29, 84, 8, 4); x.fill();
+      if (rnd() < 0.3) { x.strokeStyle = 'rgba(70,50,30,0.5)'; x.lineWidth = 1.5; x.beginPath(); const cx = bx + 20 + rnd() * 50; x.moveTo(cx, y + 5); x.lineTo(cx + 6, y + 15); x.lineTo(cx + 1, y + 24); x.stroke(); }
+      if (rnd() < 0.22) { x.fillStyle = 'rgba(90,150,70,0.5)'; x.beginPath(); x.ellipse(bx + 20 + rnd() * 50, y + 32, 14 + rnd() * 10, 5, 0, 0, 7); x.fill(); }
+    }
+    const dark = x.createLinearGradient(0, 20, 0, PH); dark.addColorStop(0, 'rgba(30,20,10,0.42)'); dark.addColorStop(0.18, 'rgba(30,20,10,0)'); dark.addColorStop(1, 'rgba(20,30,60,0.4)');
+    x.fillStyle = dark; x.fillRect(0, 20, PIER_END, PH);
+    const side = x.createLinearGradient(PIER_END - 60, 0, PIER_END, 0); side.addColorStop(0, 'rgba(30,20,10,0)'); side.addColorStop(1, 'rgba(30,20,10,0.45)');
+    x.fillStyle = side; x.fillRect(PIER_END - 60, 20, 60, PH);
+    x.fillStyle = '#2b1a0a'; x.fillRect(PIER_END - 5, 20, 5, PH);
+    slab(x, -8, 0, PIER_END + 12, 28);
+    pc.refresh();
+    PLATFORMS.forEach((p, i) => {
+      if (this.textures.exists('plat' + i)) this.textures.remove('plat' + i);
+      const c = this.textures.createCanvas('plat' + i, p.w, 30); slab(c.getContext(), 0, 0, p.w, 30); c.refresh();
+    });
+
+  }
+
+  create() {
+    this.makeTextures();
+    this.cameras.main.setZoom(HD).centerOn(W / 2, H / 2);
+    this.add.image(W / 2, H / 2, 'bg').setDisplaySize(W, H);
+    this.add.rectangle(W / 2, H / 2, W, H, 0x0d1b2a, 0.15);
+
+    // hydra (boss only)
+    this.hydra = this.add.image(HYDRA.x, HYDRA.y, 'hydra3').setOrigin(0.5, 1).setScale(HYDRA.scale).setVisible(false).setDepth(5);
+    this.tweens.add({ targets: this.hydra, angle: { from: -1.5, to: 1.5 }, duration: 1700, yoyo: true, repeat: -1, ease: 'Sine.inOut' });
+
+    // pier + platforms
+    this.add.image(0, FLOOR_Y, 'pier').setOrigin(0, 0).setDepth(6);
+    this.solids = this.physics.add.staticGroup();
+    this.solids.add(this.add.zone(PIER_END / 2, FLOOR_Y + 55, PIER_END, 110));
+    PLATFORMS.forEach((p, i) => {
+      this.add.image(p.x, p.y, 'plat' + i).setOrigin(0.5, 0).setDepth(6);
+      const z = this.add.zone(p.x, p.y + 12, p.w - 10, 24); this.solids.add(z);
+      Object.assign(z.body.checkCollision, { down: false, left: false, right: false });
+    });
+
+    // player: invisible physics box + hero picture that follows it (so squash/tilt never disturbs physics)
+    this.physics.world.setBounds(0, -400, PIER_END, H + 400);
+    this.player = this.physics.add.image(160, FLOOR_Y - 90, 'px').setVisible(false);
+    this.player.body.setSize(56, 150).setCollideWorldBounds(true).setMaxVelocityY(1100);
+    this.player.body.setGravityY(1500);
+    this.physics.add.collider(this.player, this.solids);
+    // the hero picture: walks with the walking sheet, uses the jump picture in the air (still picture if they are missing)
+    this.animated = this.textures.exists('hero_walk');
+    if (this.animated && !this.anims.exists('h_right'))
+      [['h_left', 4], ['h_right', 8]].forEach(([k, f]) => this.anims.create({ key: k, frames: this.anims.generateFrameNumbers('hero_walk', { start: f, end: f + 3 }), frameRate: 10, repeat: -1 }));
+    this.heroImg = (this.animated ? this.add.sprite(0, 0, 'hero_walk', 8) : this.add.image(0, 0, 'hero')).setDepth(10);
+    this.gear = Gear.attach(this, this.heroImg, { state: () => (this.player.body.blocked.down || this.player.body.touching.down) ? 'ground' : 'air' });
+    this.sq = { x: 1, y: 1 };   // squash and stretch, on top of the picture's own size
+    this.facing = 1; this.wasOnGround = true; this.attackT = 0; this.invuln = 0;
+
+    // effects
+    this.splash = this.add.particles(0, 0, 'dot', { speed: { min: 120, max: 380 }, gravityY: 800, lifespan: 800, scale: { start: 0.9, end: 0.1 }, emitting: false }).setDepth(20);
+    this.smoke = this.add.particles(0, 0, 'smoke', { speed: { min: 40, max: 160 }, lifespan: 1000, scale: { start: 1.1, end: 3 }, alpha: { start: 0.9, end: 0 }, tint: [0xe8e8f0, 0xcfd6e6], emitting: false }).setDepth(21);
+    this.sparks = this.add.particles(0, 0, 'dot', { speed: { min: 100, max: 320 }, lifespan: 550, scale: { start: 0.6, end: 0 }, tint: [0xfff3a0, 0xffd43b, 0xffffff], blendMode: 'ADD', emitting: false }).setDepth(22);
+    this.dust = this.add.particles(0, 0, 'dot', { speed: { min: 30, max: 90 }, angle: { min: 180, max: 360 }, lifespan: 400, scale: { start: 0.5, end: 0 }, tint: 0xe8dcc0, emitting: false }).setDepth(9);
+
+    // input
+    this.input.keyboard.on('keydown-ESC', goToCamp);
+    this.keys = this.input.keyboard.addKeys({ left: 'LEFT', right: 'RIGHT', up: 'UP', a: 'A', d: 'D', w: 'W', space: 'SPACE', r: 'R', enter: 'ENTER' });
+
+    this.orbs = []; this.fireballs = [];
+    this.buildHud();
+    this.state = 'title';
+    this.showOverlay('Demigod Trials', 'Listen to the Oracle and strike the right monster!\n\n←  →  run        ↑  jump        SPACE  strike', 'Play', () => this.startGame());
+    window.arena = this; // for testing in the console
+  }
+
+  // =====================================================================
+  //  HUD
+  // =====================================================================
+  buildHud() {
+    const d = 50;
+    this.add.graphics().setDepth(d).fillStyle(0x2b1a0a).fillRoundedRect(18, 21, 130, 46, 23).fillStyle(0xfff8e6).fillRoundedRect(18, 16, 130, 46, 23).lineStyle(4, 0x2b1a0a).strokeRoundedRect(18, 16, 130, 46, 23);
+    this.add.image(44, 39, 'coin').setDepth(d + 1);
+    this.coinText = this.add.text(68, 22, '0', { fontFamily: 'Nunito', fontSize: 27, fontStyle: '900', color: '#2b1a0a' }).setDepth(d + 1);
+    this.heartText = this.add.text(20, 70, '', { fontSize: 32 }).setDepth(d + 1);
+    this.comboText = this.add.text(20, 116, '', { fontFamily: 'Nunito', fontSize: 26, fontStyle: '900', color: '#ffe066', stroke: '#2b1a0a', strokeThickness: 6 }).setDepth(d + 1);
+    this.waveText = this.add.text(W - 20, 18, '', { fontFamily: 'Cinzel', fontSize: 26, fontStyle: '900', color: '#fff8e6', stroke: '#2b1a0a', strokeThickness: 6 }).setOrigin(1, 0).setDepth(d + 1);
+    this.dots = this.add.graphics().setDepth(d + 1);
+    // Oracle bubble
+    this.bubble = this.add.container(W / 2, 52).setDepth(d).setVisible(false);
+    this.bubbleBg = this.add.graphics();
+    this.bubbleText = this.add.text(18, -4, '', { fontFamily: 'Nunito', fontSize: 40, fontStyle: '900', color: '#2b1a0a' }).setOrigin(0, 0.5);
+    this.bubbleHe = this.add.text(0, 52, '', { fontFamily: 'Nunito', fontSize: 26, fontStyle: '900', color: '#ffe066', stroke: '#2b1a0a', strokeThickness: 6 }).setOrigin(0.5).setVisible(false);
+    this.spk = this.add.graphics().fillStyle(0x7b5cd6).fillCircle(0, -4, 24).fillStyle(0xffffff).fillRect(-11, -10, 7, 12).fillTriangle(-6, -4, 6, -17, 6, 9);
+    this.bubble.add([this.bubbleBg, this.spk, this.bubbleText, this.bubbleHe]);
+    this.bubble.setSize(420, 70).setInteractive({ useHandCursor: true }).on('pointerdown', () => this.order && say(this.order.text));
+    this.timerBar = this.add.graphics().setDepth(d);
+    this.add.text(W - 20, H - 16, '⌂ Camp', { fontFamily: 'Nunito', fontSize: 22, fontStyle: '900', color: '#fff8e6', stroke: '#2b1a0a', strokeThickness: 6 })
+      .setOrigin(1, 1).setDepth(d + 5).setInteractive({ useHandCursor: true }).on('pointerdown', goToCamp);
+  }
+  drawBubble() {
+    const tw = this.bubbleText.width, w = tw + 92, x0 = -w / 2;
+    this.spk.x = x0 + 40; this.bubbleText.x = x0 + 72;
+    this.bubbleBg.clear().fillStyle(0x2b1a0a).fillRoundedRect(x0, -32, w, 66, 33).fillStyle(0xffffff).fillRoundedRect(x0, -38, w, 66, 33).lineStyle(5, 0x2b1a0a).strokeRoundedRect(x0, -38, w, 66, 33);
+    this.bubble.setSize(w, 70);
+  }
+  drawHearts() { const h = Math.max(this.hearts, 0); this.heartText.setText('❤️'.repeat(h) + '🖤'.repeat(MAX_HEARTS - h)); }
+  drawDots() {
+    const n = this.wave.need, x0 = W - 20 - n * 26;
+    this.dots.clear();
+    for (let i = 0; i < n; i++) this.dots.fillStyle(0x2b1a0a).fillCircle(x0 + i * 26 + 10, 66, 10).fillStyle(i < this.done ? 0xffd43b : 0x6b5a48).fillCircle(x0 + i * 26 + 10, 66, 7);
+  }
+  setCombo(n) {
+    this.combo = n;
+    this.comboText.setText(n >= 2 ? `Combo x${n}!` : '');
+    if (n >= 2) this.tweens.add({ targets: this.comboText, scale: { from: 1.4, to: 1 }, duration: 200 });
+  }
+
+  showOverlay(title, text, btn, onClick) {
+    const o = this.add.container(0, 0).setDepth(200);
+    o.add(this.add.rectangle(W / 2, H / 2, W, H, 0x050f1e, 0.75).setInteractive());
+    o.add(this.add.text(W / 2, 210, title, { fontFamily: 'Cinzel', fontSize: 84, fontStyle: '900', color: '#ffd43b', stroke: '#6b4400', strokeThickness: 10 }).setOrigin(0.5));
+    o.add(this.add.text(W / 2, 345, text, { fontFamily: 'Nunito', fontSize: 28, fontStyle: '700', color: '#ffffff', align: 'center', lineSpacing: 6 }).setOrigin(0.5));
+    const b = this.add.container(W / 2, 500);
+    b.add([this.add.graphics().fillStyle(0x2b1a0a).fillRoundedRect(-150, -32, 300, 76, 38).fillStyle(0xffd43b).fillRoundedRect(-150, -40, 300, 76, 38).lineStyle(5, 0x2b1a0a).strokeRoundedRect(-150, -40, 300, 76, 38),
+           this.add.text(0, -2, btn, { fontFamily: 'Cinzel', fontSize: 38, fontStyle: '900', color: '#2b1a0a' }).setOrigin(0.5)]);
+    const go = () => { if (!o.active) return; o.destroy(); this.keys.enter.off('down', go); onClick(); };
+    b.setSize(300, 76).setInteractive({ useHandCursor: true }).on('pointerdown', go).on('pointerover', () => b.setScale(1.06)).on('pointerout', () => b.setScale(1));
+    this.keys.enter.once('down', go);
+    o.add(b);
+    this.tweens.add({ targets: o, alpha: { from: 0, to: 1 }, duration: 250 });
+  }
+
+  banner(title, sub) {
+    const t = this.add.text(W / 2, 300, title, { fontFamily: 'Cinzel', fontSize: 92, fontStyle: '900', color: '#ffd43b', stroke: '#6b4400', strokeThickness: 10 }).setOrigin(0.5).setDepth(120);
+    const s = this.add.text(W / 2, 390, sub, { fontFamily: 'Nunito', fontSize: 38, fontStyle: '900', color: '#fff', stroke: '#2b1a0a', strokeThickness: 7 }).setOrigin(0.5).setDepth(120);
+    this.tweens.add({ targets: [t, s], scale: { from: 0.4, to: 1 }, duration: 400, ease: 'Back.out' });
+    this.tweens.add({ targets: [t, s], alpha: 0, delay: 1500, duration: 400, onComplete: () => { t.destroy(); s.destroy(); } });
+  }
+
+  floatText(txt, x, y, color = '#ffe066', size = 32) {
+    const t = this.add.text(x, y, txt, { fontFamily: 'Nunito', fontSize: size, fontStyle: '900', color, stroke: '#2b1a0a', strokeThickness: 6 }).setOrigin(0.5).setDepth(60);
+    this.tweens.add({ targets: t, y: y - 80, alpha: { from: 1, to: 0 }, scale: { from: 0.7, to: 1.15 }, duration: 1000, ease: 'Quad.out', onComplete: () => t.destroy() });
+  }
+
+  coinBurst(x, y, n) {
+    for (let k = 0; k < n; k++) {
+      const c = this.add.image(x, y, 'coin').setDepth(55);
+      this.tweens.chain({ targets: c, tweens: [
+        { x: x + Phaser.Math.Between(-90, 90), y: y - Phaser.Math.Between(50, 140), duration: 300, ease: 'Quad.out' },
+        { x: 44, y: 39, scale: 0.6, duration: 500 + k * 60, ease: 'Quad.in' },
+      ], onComplete: () => { c.destroy(); sfx.coin(); this.coins++; this.coinText.setText(String(this.coins)); Save.addCoins(1); } });
+    }
+  }
+
+  // =====================================================================
+  //  GAME FLOW
+  // =====================================================================
+  startGame() {
+    this.coins = 0; this.coinText.setText('0');
+    this.startWave(0);
+  }
+
+  startWave(i) {
+    this.clearArena();
+    this.waveIndex = i; this.wave = WAVES[i];
+    this.countPool = Phaser.Utils.Array.Shuffle(NOUNS.slice()).slice(0, 3);
+    this.hearts = MAX_HEARTS; this.drawHearts(); this.setCombo(0);
+    this.heartText.setVisible(!!this.wave.boss);
+    this.done = 0; this.drawDots(); this.waveText.setText(this.wave.name);
+    this.player.setPosition(160, FLOOR_Y - 90).setVelocity(0, 0);
+    this.state = 'intro'; this.order = null;
+    this.banner(this.wave.name, this.wave.sub);
+    if (this.wave.boss) {
+      this.headCount = 3; this.setHydraTexture(3);
+      this.hydra.setVisible(true).setY(HYDRA.y + 400);
+      this.tweens.add({ targets: this.hydra, y: HYDRA.y, duration: 1200, ease: 'Back.out', onStart: () => sfx.roar() });
+    } else this.hydra.setVisible(false);
+    this.time.delayedCall(2000, () => {
+      this.state = 'play';
+      if (this.wave.boss) { this.spawnBossOrbs(); this.nextFireball = this.time.now + 3000; }
+      else { for (let k = 0; k < this.wave.orbs; k++) this.time.delayedCall(k * 150, () => this.spawnOrb()); }
+      this.time.delayedCall(900, () => this.newOrder());
+    });
+  }
+
+  clearArena() {
+    this.orbs.forEach(o => o.c.destroy()); this.orbs = [];
+    this.fireballs.forEach(f => f.destroy()); this.fireballs = [];
+    this.bubble.setVisible(false); this.timerBar.clear();
+    if (this.hintTimer) this.hintTimer.remove();
+  }
+
+  // ---------- orbs ----------
+  spawnOrb(fromX, fromY) {
+    const alive = this.orbs.filter(o => o.state !== 'dead');
+    let noun, color, tries = 0;
+    // counting trials draw from a small pool so the same picture shows up several times
+    const pool = this.wave.counts && this.countPool ? this.countPool : NOUNS;
+    const clash = (n, c) => alive.some(o => o.noun === n && (this.wave.colors || this.wave.counts ? o.color === c : true));
+    do {
+      noun = Phaser.Utils.Array.GetRandom(pool); color = Phaser.Utils.Array.GetRandom(COLORS); tries++;
+    } while (tries < 60 && clash(noun, color));
+    const x = fromX ?? Phaser.Math.Between(ORB_BAND.x1, ORB_BAND.x2), y = fromY ?? -60;
+    const c = this.add.container(x, y).setDepth(15);
+    const glow = this.add.circle(0, 0, 60, 0xffd43b, 0.5).setVisible(false);
+    const body = this.add.image(0, 0, 'orb_' + color[0]);
+    const ik = iconKey(noun[0]);
+    let pic;
+    if (this.textures.exists(ik)) { pic = this.add.image(0, 2, ik); pic.setScale(64 / Math.max(pic.width, pic.height)); }
+    else pic = this.add.text(0, 2, noun[1], { fontSize: 44 }).setOrigin(0.5);
+    c.add([glow, body, pic]);
+    this.tweens.add({ targets: body, scale: 1.06, duration: 900 + Math.random() * 400, yoyo: true, repeat: -1, ease: 'Sine.inOut' });
+    this.tweens.add({ targets: c, angle: { from: -6, to: 6 }, duration: 1400 + Math.random() * 600, yoyo: true, repeat: -1, ease: 'Sine.inOut' });
+    this.tweens.add({ targets: glow, scale: 1.25, alpha: 0.2, duration: 400, yoyo: true, repeat: -1 });
+    const o = { c, glow, body, noun, color, state: 'float', r: 44, phase: Math.random() * 6, tx: 0, ty: 0, vx: 0, vy: 0, t0: 0 };
+    this.pickTarget(o);
+    c.setScale(0); this.tweens.add({ targets: c, scale: 1, duration: 300, ease: 'Back.out' });
+    this.orbs.push(o);
+    return o;
+  }
+
+  pickTarget(o) {
+    o.tx = Phaser.Math.Between(ORB_BAND.x1, ORB_BAND.x2 - (this.wave.boss ? 140 : 0));
+    o.ty = Phaser.Math.Between(ORB_BAND.y1, ORB_BAND.y2);
+  }
+
+  describe(o) { // text + hebrew for an orb
+    const [en, , heN, g] = o.noun;
+    if (!this.wave.colors) return { text: `Hit the ${en}!`, he: heN };
+    const c = o.color; return { text: `Hit the ${c[0]} ${en}!`, he: `${heN} ${g === 'f' ? c[4] : c[3]}` };
+  }
+
+  newOrder() {
+    if (this.state !== 'play') return;
+    const alive = this.orbs.filter(o => o.state !== 'dead');
+    if (!alive.length) { this.time.delayedCall(400, () => this.newOrder()); return; }
+    let order;
+    const groups = {};
+    alive.forEach(o => (groups[o.noun[0]] = groups[o.noun[0]] || []).push(o));
+    const countable = Object.values(groups).filter(g => g.length >= 2);
+    const r = Math.random(), prev = this.lastType;
+    if (this.wave.cmds && r < 0.25 && prev !== 'cmd') {
+      const cmd = Phaser.Utils.Array.GetRandom(COMMANDS);
+      order = { type: 'cmd', id: cmd.id, text: cmd.text, he: cmd.he, limit: 4000 };
+    } else if (this.wave.counts && countable.length && r < (this.wave.cmds ? 0.55 : 0.85)) {
+      const g = Phaser.Utils.Array.GetRandom(countable), n = Math.min(g.length, Phaser.Math.Between(2, 3)), en = g[0].noun[0];
+      order = { type: 'count', noun: g[0].noun, n, got: 0, text: `Hit ${NUMBER_WORDS[n]} ${PLURAL[en] || en + 's'}!`,
+                he: `${n} × ${g[0].noun[2]}`, limit: this.wave.limit + 3000 };
+    } else {
+      const target = Phaser.Utils.Array.GetRandom(alive);
+      order = { type: 'hit', target, ...this.describe(target), limit: this.wave.limit };
+    }
+    this.lastType = order.type;
+    order.t0 = this.time.now; order.hinted = false;
+    this.order = order;
+    this.bubbleText.setText(order.text); this.bubbleHe.setText(order.he).setVisible(false); this.drawBubble();
+    this.bubble.setVisible(true).setScale(0.5); this.tweens.add({ targets: this.bubble, scale: 1, duration: 280, ease: 'Back.out' });
+    say(order.text);
+    if (this.hintTimer) this.hintTimer.remove();
+    this.hintTimer = this.time.delayedCall(order.type === 'cmd' ? 2200 : 5500, () => this.showHint());
+  }
+
+  showHint() {
+    const o = this.order; if (!o || this.state !== 'play') return;
+    o.hinted = true; this.bubbleHe.setVisible(true);
+    if (o.type === 'hit' && o.target.state !== 'dead') o.target.glow.setVisible(true);
+    if (o.type === 'count') this.orbs.filter(x => x.noun === o.noun && x.state !== 'dead').forEach(x => x.glow.setVisible(true));
+    say(o.text);
+  }
+
+  orderDone(x, y) {
+    const o = this.order; this.order = null;
+    if (this.hintTimer) this.hintTimer.remove();
+    this.setCombo(this.combo + 1);
+    const fast = this.time.now - o.t0 < 3000 && !o.hinted;
+    const n = 3 + Math.min(this.combo, 5) + (fast ? 2 : 0);
+    this.coinBurst(x, y, n);
+    this.floatText(fast ? 'Fast!' : (o.hinted ? 'Good!' : 'Great!'), x, y - 50, '#ffe066', 36);
+    sfx.good();
+    this.bubble.setVisible(false); this.timerBar.clear();
+    this.done++; this.drawDots();
+    if (this.done >= this.wave.need) return this.waveComplete();
+    this.time.delayedCall(900, () => this.newOrder());
+  }
+
+  // confetti, fireworks and a happy hero
+  celebrate(big) {
+    if (!this.textures.exists('confetti')) { const g = this.make.graphics({ add: false }); g.fillStyle(0xffffff).fillRect(0, 0, 10, 16).generateTexture('confetti', 10, 16).destroy(); }
+    const conf = this.add.particles(0, 0, 'confetti', {
+      x: { min: 0, max: W }, y: -20, lifespan: 3200, speedY: { min: 180, max: 320 }, speedX: { min: -80, max: 80 },
+      rotate: { start: 0, end: 720 }, scale: { min: 0.6, max: 1.1 }, quantity: big ? 6 : 4, frequency: 40,
+      tint: [0xe84545, 0x3b82f6, 0x3fbf6f, 0xffd43b, 0xff7eb6, 0x9b5de5, 0xff8a1f],
+    }).setDepth(150);
+    this.time.delayedCall(big ? 2600 : 1600, () => conf.stop());
+    this.time.delayedCall(5000, () => conf.destroy());
+    const boom = this.add.particles(0, 0, 'dot', { speed: { min: 150, max: 380 }, lifespan: 900, gravityY: 250, scale: { start: 1.2, end: 0 }, blendMode: 'ADD', emitting: false }).setDepth(151);
+    for (let k = 0; k < (big ? 8 : 4); k++) this.time.delayedCall(200 + k * 320, () => {
+      boom.setParticleTint(Phaser.Utils.Array.GetRandom([0xffd43b, 0xff7eb6, 0x4fd1ff, 0x7be07b, 0xff8a1f]));
+      boom.explode(40, Phaser.Math.Between(200, W - 200), Phaser.Math.Between(120, 360));
+      tone(300 + k * 60, 1200, .25, 'triangle', .05);
+    });
+    this.time.delayedCall(6000, () => boom.destroy());
+    // the hero jumps for joy twice
+    [0, 650].forEach(t => this.time.delayedCall(t, () => { if (this.player.body.blocked.down) { this.player.setVelocityY(-620); this.squash(0.8, 1.2); } }));
+    this.tweens.add({ targets: this.heroImg, angle: this.facing * 360, duration: 600, delay: 700, onComplete: () => this.heroImg.setAngle(0) });
+  }
+
+  waveComplete() {
+    this.state = 'clear';
+    this.orbs.forEach(o => { if (o.state !== 'dead') this.popOrb(o, false); });
+    this.time.delayedCall(500, () => { sfx.win(); this.celebrate(false); this.banner('Trial complete!', `+${10} bonus`); this.coinBurst(W / 2, 360, 10); });
+    const next = this.waveIndex + 1;
+    Save.markDone('arena', next);
+    this.time.delayedCall(3000, () => {
+      if (next < WAVES.length) this.startWave(next);
+    });
+  }
+
+  // ---------- combat ----------
+  attack() {
+    if (this.attackT > 0 || this.state !== 'play') return;
+    this.attackT = 0.32; sfx.swing();
+    const dir = this.facing, px = this.player.x, top = this.player.body.top;
+    const s = this.add.image(px + dir * 70, top + 60, 'slash').setDepth(12).setFlipX(dir < 0).setBlendMode('ADD').setScale(0.6);
+    this.tweens.add({ targets: s, scale: 1.1, alpha: { from: 1, to: 0 }, x: px + dir * 95, duration: 220, ease: 'Quad.out', onComplete: () => s.destroy() });
+    this.tweens.add({ targets: this.heroImg, angle: dir * 20, duration: 80, yoyo: true });
+    // hit box in front of the hero
+    const box = new Phaser.Geom.Rectangle(dir > 0 ? px : px - 150, top - 50, 150, 220);
+    const inRange = this.orbs.filter(o => o.state !== 'dead' && o.state !== 'flying' && Phaser.Geom.Intersects.CircleToRectangle(new Phaser.Geom.Circle(o.c.x, o.c.y, o.r), box));
+    if (!inRange.length) return;
+    const ord = this.order;
+    if (ord && ord.type === 'count') {
+      const c = inRange.find(o => o.noun === ord.noun);
+      if (c) this.countHit(c); else this.hitWrong(inRange[0]);
+      return;
+    }
+    const good = ord && ord.type === 'hit' && inRange.includes(ord.target) ? ord.target : null;
+    if (good) this.hitRight(good);
+    else this.hitWrong(inRange[0]);
+  }
+
+  hitRight(o) {
+    this.cameras.main.shake(120, 0.008);
+    if (this.wave.boss) return this.bossStrike(o);
+    const x = o.c.x, y = o.c.y;
+    this.popOrb(o, true);
+    this.orderDone(x, y);
+    this.time.delayedCall(1100, () => { if (this.state === 'play') this.spawnOrb(); });
+  }
+
+  countHit(o) {
+    const ord = this.order, x = o.c.x, y = o.c.y;
+    this.cameras.main.shake(100, 0.006);
+    this.popOrb(o, true); ord.got++;
+    this.time.delayedCall(1100, () => { if (this.state === 'play') this.spawnOrb(); });
+    // count out loud on every hit, including the last one
+    say(NUMBER_WORDS[ord.got] + '!');
+    if (ord.got >= ord.n) { this.floatText(NUMBER_WORDS[ord.got] + '!', x, y - 100, '#ffffff', 40); return this.orderDone(x, y); }
+    this.floatText(NUMBER_WORDS[ord.got] + '!', x, y - 50, '#ffffff', 40);
+  }
+
+  hitWrong(o) {
+    sfx.wrong(); this.setCombo(0);
+    this.floatText(this.order && this.order.type !== 'cmd' ? 'Not that one!' : 'Listen!', o.c.x, o.c.y - 60, '#ff9b9b', 28);
+    // knock the orb away
+    const dir = Math.sign(o.c.x - this.player.x) || 1;
+    o.state = 'return'; o.vx = dir * 500; o.vy = -300; o.t0 = this.time.now;
+    o.body.setTintFill(0xffffff); this.time.delayedCall(80, () => o.body.clearTint());
+    this.tweens.add({ targets: o.body, angle: dir * 360, duration: 500, onComplete: () => o.body.setAngle(0) });
+    if (this.order && !this.order.hinted) this.showHint();
+    if (this.wave.boss) this.spitFire(true);
+  }
+
+  popOrb(o, burst) {
+    o.state = 'dead'; sfx.pop();
+    this.splash.setParticleTint(o.color[1]);
+    this.splash.explode(burst ? 26 : 12, o.c.x, o.c.y);
+    if (burst) this.sparks.explode(14, o.c.x, o.c.y);
+    this.tweens.add({ targets: o.c, scale: 1.5, alpha: 0, duration: 180, onComplete: () => o.c.destroy() });
+    this.orbs = this.orbs.filter(x => x !== o);
+  }
+
+  hurt(fromX) {
+    if (this.invuln > 0 || this.state !== 'play') return;
+    sfx.hurt(); this.hearts--; this.drawHearts(); this.setCombo(0);
+    this.invuln = 1.6; this.cameras.main.shake(220, 0.012);
+    this.heroImg.setTintFill(0xff5050); this.time.delayedCall(120, () => this.heroImg.clearTint());
+    const dir = Math.sign(this.player.x - fromX) || -1;
+    this.player.setVelocity(dir * 380, -420);
+    this.floatText('Ouch!', this.player.x, this.player.body.top - 30, '#ff9b9b');
+    if (this.hearts <= 0) {
+      this.state = 'over'; this.clearArena();
+      this.time.delayedCall(800, () => this.showOverlay('Ouch!', 'The monsters got you this time.\nTry the trial again!', 'Try again', () => this.startWave(this.waveIndex)));
+    }
+  }
+
+  // ---------- boss ----------
+  setHydraTexture(n) { const k = HYDRA.images[n]; this.hydra.setTexture(this.textures.exists(k) ? k : 'hydra3'); }
+  headWorld(n) { const p = HYDRA.cut[n], s = HYDRA.scale; return { x: HYDRA.x + (p.x - HYDRA.size.w / 2) * s, y: HYDRA.y + (p.y - HYDRA.size.h) * s }; }
+
+  spawnBossOrbs() {
+    // the Hydra spits three picture orbs out into the arena
+    const mouth = this.headWorld(this.headCount);
+    for (let k = 0; k < 3; k++) this.time.delayedCall(k * 220, () => {
+      if (this.state !== 'play') return;
+      const o = this.spawnOrb(mouth.x - 40, mouth.y);
+      o.c.setScale(0.3); sfx.pop();
+    });
+  }
+
+  bossStrike(o) {
+    // the orb is knocked back into the Hydra and cuts a head
+    this.state = 'cutscene'; this.bubble.setVisible(false); if (this.hintTimer) this.hintTimer.remove();
+    const head = this.headWorld(this.headCount);
+    o.state = 'flying';
+    this.orbs.filter(x => x !== o).forEach(x => this.popOrb(x, false));
+    this.tweens.add({ targets: o.c, x: head.x, y: head.y, angle: 540, duration: 420, ease: 'Quad.in', onComplete: () => {
+      this.popOrb(o, true);
+      this.cameras.main.shake(300, 0.016); this.cameras.main.flash(120, 255, 255, 255);
+      this.hydra.setTintFill(0xffffff); this.time.delayedCall(90, () => this.hydra.clearTint());
+      this.splash.setParticleTint(0x3fbf6f); this.splash.explode(40, head.x, head.y);
+      const ord = this.order; this.order = null;
+      this.setCombo(this.combo + 1); this.coinBurst(head.x, head.y, 6 + Math.min(this.combo, 5));
+      this.done++; this.drawDots();
+      sfx.roar();
+      const top = this.hydra.getTopCenter().y;
+      if (this.done % 2 === 0 || this.done >= this.wave.need) for (let k = 0; k < 24; k++) this.smoke.explode(1, HYDRA.x + Phaser.Math.Between(-170, 170), Phaser.Math.Between(top + 20, top + 230));
+      this.time.delayedCall(180, () => {
+        if (this.done >= this.wave.need) return this.bossDefeated();
+        if (this.done % 2 === 0) { this.headCount--; this.setHydraTexture(this.headCount); this.floatText('A head falls!', head.x, head.y - 70, '#9ff0c0', 34); }
+        else this.floatText('One more hit!', head.x, head.y - 70, '#ffffff', 30);
+        this.time.delayedCall(1200, () => { this.state = 'play'; this.spawnBossOrbs(); this.time.delayedCall(900, () => this.newOrder()); });
+      });
+    } });
+  }
+
+  spitFire(now) {
+    if (this.state !== 'play') return;
+    const m = this.headWorld(this.headCount);
+    const T = 1.25, g = 650, tx = this.player.x + Phaser.Math.Between(-40, 40), ty = FLOOR_Y - 20;
+    const f = this.add.image(m.x - 30, m.y + 10, 'fire').setDepth(14);
+    f.vx = (tx - f.x) / T; f.vy = (ty - f.y - 0.5 * g * T * T) / T; f.g = g;
+    this.tweens.add({ targets: this.hydra, x: HYDRA.x - 18, duration: 120, yoyo: true });
+    this.tweens.add({ targets: f, angle: 360, duration: 500, repeat: -1 });
+    this.fireballs.push(f);
+    sfx.warn();
+  }
+
+  bossDefeated() {
+    this.state = 'clear'; this.clearArena();
+    for (let k = 0; k < 5; k++) this.time.delayedCall(k * 200, () => this.smoke.explode(14, HYDRA.x + Phaser.Math.Between(-140, 140), Phaser.Math.Between(330, 640)));
+    this.tweens.add({ targets: this.hydra, y: HYDRA.y + 500, angle: 10, duration: 1500, ease: 'Quad.in' });
+    this.time.delayedCall(1700, () => {
+      sfx.win(); this.celebrate(true); say('You defeated the Hydra! You are a true hero!'); Save.markDone('arena', WAVES.length);
+      this.coinBurst(W / 2, 360, 15);
+      this.time.delayedCall(1200, () => this.showOverlay('Victory!', `You beat all the trials\nand defeated the Hydra!\n\nDrachmas: ${this.coins}`, 'Back to camp', goToCamp));
+    });
+  }
+
+  // =====================================================================
+  //  UPDATE LOOP
+  // =====================================================================
+  update(time, deltaMs) {
+    hdTick(this, this.uiCam);
+    const dt = Math.min(deltaMs, 50) / 1000;
+    const k = this.keys, body = this.player.body;
+    const onGround = body.blocked.down || body.touching.down;
+    const canMove = this.state === 'play' || this.state === 'intro' || this.state === 'cutscene' || this.state === 'clear';
+
+    // --- hero control ---
+    let move = 0;
+    if (canMove) {
+      if (k.left.isDown || k.a.isDown) move -= 1;
+      if (k.right.isDown || k.d.isDown) move += 1;
+      if (Phaser.Input.Keyboard.JustDown(k.up) || Phaser.Input.Keyboard.JustDown(k.w)) {
+        if (onGround) { this.player.setVelocityY(-760); sfx.jump(); this.squash(0.8, 1.2); this.dust.explode(6, this.player.x, body.bottom); this.jumped = true; }
+      }
+      if (Phaser.Input.Keyboard.JustDown(k.space)) this.attack();
+      if (Phaser.Input.Keyboard.JustDown(k.r) && this.order) say(this.order.text);
+    }
+    if (this.invuln <= 0 || this.invuln < 1.3) this.player.setVelocityX(Phaser.Math.Linear(body.velocity.x, move * 330, onGround ? 0.35 : 0.15));
+    if (move) this.facing = move;
+    if (!this.wasOnGround && onGround) { this.squash(1.2, 0.82); this.dust.explode(8, this.player.x, body.bottom); }
+    this.wasOnGround = onGround;
+    this.attackT = Math.max(0, this.attackT - dt); this.invuln = Math.max(0, this.invuln - dt);
+
+    // --- hero picture follows the physics box ---
+    const run = onGround && Math.abs(body.velocity.x) > 40, h = this.heroImg;
+    if (!onGround && this.textures.exists('hero_jump')) {             // in the air: the jump picture
+      if (h.anims) h.anims.stop();
+      if (h.texture.key !== 'hero_jump') h.setTexture('hero_jump');
+      h.setFlipX(this.facing < 0);
+    } else if (this.animated) {                                       // on the ground: walk, or stand still
+      if (h.texture.key !== 'hero_walk') h.setTexture('hero_walk', this.facing < 0 ? 4 : 8);
+      h.setFlipX(false);
+      if (run) {
+        const a = this.facing < 0 ? 'h_left' : 'h_right';
+        if (h.anims.currentAnim?.key !== a || !h.anims.isPlaying) h.play(a);
+        h.anims.timeScale = Phaser.Math.Clamp(Math.abs(body.velocity.x) / 260, 0.6, 1.4);
+      } else { h.anims.stop(); h.setFrame(this.facing < 0 ? 4 : 8); }
+    } else h.setFlipX(this.facing < 0);
+    // every picture is drawn the same height, standing on the ground (measured once from the drawn pixels)
+    const m = this.heroMetrics(h.texture.key === 'hero_walk' ? 'hero_walk' : h.texture.key, h.texture.key === 'hero_walk' ? 8 : '__BASE');
+    const base = (h.texture.key === 'hero_jump' ? 168 : 175) / m.h;
+    h.setOrigin(0.5, m.bottom).setScale(base * this.sq.x, base * this.sq.y);
+    h.setPosition(this.player.x, body.bottom + 4 + (run || !onGround ? 0 : Math.sin(time / 450) * 1.2));
+    if (this.attackT <= 0.24) h.angle = Phaser.Math.Linear(h.angle, onGround ? 0 : this.facing * -4, 0.3);
+    this.heroImg.alpha = this.invuln > 0 ? (Math.floor(time / 80) % 2 ? 0.35 : 1) : 1;
+
+    // --- orbs ---
+    for (const o of this.orbs) {
+      if (o.state === 'dead' || o.state === 'flying') continue;
+      const c = o.c;
+      if (o.state === 'float') {
+        const sp = 0.9 * (this.wave.speed || 1) * dt; c.x = Phaser.Math.Linear(c.x, o.tx, sp); c.y = Phaser.Math.Linear(c.y, o.ty, sp) + Math.sin(time / 300 + o.phase) * 0.6;
+        if (Math.abs(c.x - o.tx) < 30 && Math.abs(c.y - o.ty) < 30) this.pickTarget(o);
+      } else if (o.state === 'warn') {
+        c.x += Math.sin(time / 20) * 2;
+        if (time - o.t0 > 700) { o.state = 'dive'; o.t0 = time; const a = Phaser.Math.Angle.Between(c.x, c.y, this.player.x, this.player.y); o.vx = Math.cos(a) * 560; o.vy = Math.sin(a) * 560; o.body.clearTint(); }
+      } else if (o.state === 'dive') {
+        c.x += o.vx * dt; c.y += o.vy * dt;
+        if (c.y > FLOOR_Y - 40 || time - o.t0 > 1500 || c.x < 30 || c.x > W - 30) { o.state = 'return'; o.t0 = time; o.vx *= 0.3; o.vy = -420; }
+        const pr = new Phaser.Geom.Rectangle(body.left + 6, body.top + 10, body.width - 12, body.height - 20);
+        if (Phaser.Geom.Intersects.CircleToRectangle(new Phaser.Geom.Circle(c.x, c.y, o.r - 10), pr)) { this.hurt(c.x); o.state = 'return'; o.t0 = time; o.vx = -o.vx * 0.5; o.vy = -460; }
+      } else if (o.state === 'return') {
+        c.x += o.vx * dt; c.y += o.vy * dt; o.vx *= 0.96; o.vy *= 0.96;
+        c.x = Phaser.Math.Clamp(c.x, 40, W - 40);
+        if (time - o.t0 > 600) { o.state = 'float'; this.pickTarget(o); }
+      }
+    }
+
+    // --- fireballs (boss) ---
+    if (this.state === 'play' && this.wave?.boss && time > this.nextFireball) {
+      this.spitFire(); this.nextFireball = time + Math.max(1500, 3000 - this.done * 220);
+    }
+    for (const f of this.fireballs) {
+      f.vy += f.g * dt; f.x += f.vx * dt; f.y += f.vy * dt;
+      if (Phaser.Geom.Intersects.CircleToRectangle(new Phaser.Geom.Circle(f.x, f.y, 16), new Phaser.Geom.Rectangle(body.left + 6, body.top + 10, body.width - 12, body.height - 20))) { this.hurt(f.x); f.dead = true; }
+      if (f.y > FLOOR_Y - 10) { f.dead = true; sfx.boom(); }
+      if (f.dead) { this.splash.setParticleTint(0xff8a3d); this.splash.explode(14, f.x, Math.min(f.y, FLOOR_Y - 10)); f.destroy(); }
+    }
+    this.fireballs = this.fireballs.filter(f => !f.dead);
+
+    // --- command orders ---
+    const ord = this.order;
+    if (this.state === 'play' && ord) {
+      if (ord.type === 'cmd') {
+        const ok = (ord.id === 'jump' && this.jumped && time - ord.t0 > 150) || (ord.id === 'left' && this.player.x < 260) || (ord.id === 'right' && this.player.x > PIER_END - 200);
+        if (ok) this.orderDone(this.player.x, body.top);
+        else if (time - ord.t0 > ord.limit) { this.order = null; this.floatText('Too slow!', this.player.x, body.top - 30, '#ff9b9b'); this.setCombo(0); this.bubble.setVisible(false); this.timerBar.clear(); this.time.delayedCall(900, () => this.newOrder()); }
+      }
+      if (ord.type === 'hit' && ord.target.state === 'dead') { this.order = null; this.time.delayedCall(300, () => this.newOrder()); }
+      if (ord.type === 'count' && ord.got < ord.n && this.orbs.filter(o => o.noun === ord.noun && o.state !== 'dead').length < ord.n - ord.got) { this.order = null; this.time.delayedCall(300, () => this.newOrder()); }
+      // order timer bar under the bubble
+      if (this.order) {
+        const f = Phaser.Math.Clamp(1 - (time - ord.t0) / ord.limit, 0, 1);
+        this.timerBar.clear().fillStyle(0x000000, 0.4).fillRoundedRect(W / 2 - 100, 92, 200, 10, 5).fillStyle(f > 0.35 ? 0x7be07b : 0xff7b7b).fillRoundedRect(W / 2 - 100, 92, 200 * f, 10, 5);
+      }
+    }
+    this.jumped = false;
+  }
+
+  squash(sx, sy) {
+    if (this.squashTween) this.squashTween.stop();
+    this.sq.x = sx; this.sq.y = sy;
+    this.squashTween = this.tweens.add({ targets: this.sq, x: 1, y: 1, duration: 160, ease: 'Back.out' });
+  }
+  // the drawn part of a picture: its height and where its lowest pixel is (0..1), measured once
+  heroMetrics(key, frame) {
+    this._hm = this._hm || {};
+    const id = key + ':' + frame;
+    if (!this._hm[id]) {
+      const f = this.textures.getFrame(key, frame), c = document.createElement('canvas');
+      c.width = f.cutWidth; c.height = f.cutHeight;
+      const x = c.getContext('2d'); x.drawImage(f.source.image, f.cutX, f.cutY, f.cutWidth, f.cutHeight, 0, 0, f.cutWidth, f.cutHeight);
+      const d = x.getImageData(0, 0, c.width, c.height).data;
+      let top = c.height, bottom = 0;
+      for (let y = 0; y < c.height; y++) for (let i = 0; i < c.width; i++) if (d[(y * c.width + i) * 4 + 3] > 40) { if (y < top) top = y; bottom = y; break; }
+      this._hm[id] = { h: Math.max(1, bottom - top + 1), bottom: (bottom + 1) / c.height };
+    }
+    return this._hm[id];
+  }
+}
+
+Promise.all([document.fonts.load('900 40px Cinzel'), document.fonts.load('900 20px Nunito'), loadManifest()]).catch(() => {}).then(() => {
+  new Phaser.Game({
+    type: Phaser.AUTO, parent: 'game', backgroundColor: '#0d1b2a',
+    // smooth shrinking of the pictures (needs power-of-two image sizes, see tools/pot.py)
+    render: { antialias: true, mipmapFilter: 'LINEAR_MIPMAP_LINEAR' },
+    physics: { default: 'arcade', arcade: { debug: false } },
+    // drawn HD times bigger than the 1280x720 design and zoomed, so it stays sharp on any screen (see common.js)
+    scale: { mode: Phaser.Scale.FIT, autoCenter: Phaser.Scale.CENTER_BOTH, width: Math.round(W * HD), height: Math.round(H * HD) },
+    scene: Arena,
+  });
+});
+</script>
+</body>
+</html>

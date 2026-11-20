@@ -1,0 +1,13 @@
+{
+  "name": "demigod-english-game",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "voices": "node --env-file=.env.local tools/make_voices.mjs",
+    "voices:list": "node --env-file=.env.local tools/make_voices.mjs --list-voices",
+    "voices:samples": "node --env-file=.env.local tools/make_voices.mjs --samples"
+  },
+  "dependencies": {
+    "@elevenlabs/elevenlabs-js": "^2.77.0"
+  }
+}

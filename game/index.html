@@ -1,0 +1,113 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Demigod Camp</title>
+<link href="https://fonts.googleapis.com/css2?family=Cinzel:wght@700;900&family=Nunito:wght@700;900&display=swap" rel="stylesheet">
+<style>
+  :root { --ink: #2b1a0a; --cream: #fff8e6; --gold: #ffd43b; }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; height: 100%; }
+  body {
+    font-family: 'Nunito', sans-serif; color: var(--ink);
+    background: #0d1b2a url(assets/sea_bg.jpg) center / cover no-repeat fixed;
+    display: flex; flex-direction: column; align-items: center; min-height: 100vh; padding: 24px 16px 40px;
+  }
+  body::before { content: ''; position: fixed; inset: 0; background: linear-gradient(rgba(13,27,42,.25), rgba(13,27,42,.55)); z-index: -1; }
+  header { width: 100%; max-width: 1500px; display: flex; justify-content: space-between; align-items: center; }
+  .coins { display: flex; align-items: center; gap: 10px; background: var(--cream); border: 4px solid var(--ink); border-radius: 30px; padding: 6px 18px 6px 8px; font-weight: 900; font-size: 26px; box-shadow: 0 5px 0 var(--ink); }
+  .coin { width: 32px; height: 32px; border-radius: 50%; background: radial-gradient(circle at 35% 35%, #fff3a0, #ffc400 45%, #b8860b); border: 3px solid #7a5600; }
+  h1 { font-family: 'Cinzel', serif; font-weight: 900; font-size: clamp(44px, 8vw, 86px); color: var(--gold); margin: 30px 0 4px; text-align: center;
+       -webkit-text-stroke: 3px #6b4400; text-shadow: 0 6px 0 #6b4400, 0 0 30px rgba(255,212,59,.45); }
+  .sub { color: #fff; font-size: 24px; font-weight: 900; text-shadow: 0 3px 0 #000; margin: 0 0 34px; text-align: center; }
+  .games { width: 100%; max-width: 1500px; display: grid; grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); gap: 30px; }
+  .card { position: relative; background: var(--cream); border: 5px solid var(--ink); border-radius: 26px; box-shadow: 0 9px 0 var(--ink); overflow: hidden;
+          text-decoration: none; color: inherit; display: flex; flex-direction: column; transition: transform .15s; }
+  a.card:hover { transform: translateY(-6px) rotate(-1deg); }
+  .art { aspect-ratio: 16 / 9; display: flex; align-items: center; justify-content: center; font-size: 96px; border-bottom: 5px solid var(--ink); position: relative; overflow: hidden; }
+  .art img { height: 92%; filter: drop-shadow(0 6px 4px rgba(0,0,0,.35)); }
+  /* full-card picture (Nano Banana art in assets/menu/); the emoji underneath shows until it exists */
+  .art img.cover { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; filter: none; }
+  .art.trials { background: linear-gradient(#ffb26b, #2e86de); }
+  .art.maze { background: repeating-linear-gradient(90deg, #5b4a3c 0 32px, #6b5a48 32px 64px); }
+  .art.soon { background: #b9b2a3; }
+  .art.hermes { background: linear-gradient(#8fcf6a, #e8d5a8); }
+  .art.climb { background: linear-gradient(#a98be8, #ffe7f6); }
+  .art.voyage { background: linear-gradient(#7ec8ff, #1d5d99); }
+  .body { padding: 16px 20px 70px; }
+  .card h2 { font-family: 'Cinzel', serif; font-weight: 900; font-size: 30px; margin: 0 0 6px; }
+  .card p { margin: 0; font-size: 18px; color: #6b4a2a; }
+  .play { position: absolute; right: 16px; bottom: 16px; background: var(--gold); border: 4px solid var(--ink); border-radius: 30px; padding: 6px 20px; font-family: 'Cinzel', serif; font-weight: 900; font-size: 22px; box-shadow: 0 4px 0 var(--ink); }
+  .card.locked { filter: grayscale(.8); opacity: .8; }
+  .stars { margin-top: 8px; font-size: 20px; }
+  /* Hermes' Shop: a little market stall among the game cards */
+  .card.stall { border-radius: 18px 18px 26px 26px; }
+  .awning { position: relative; height: 46px; background: repeating-linear-gradient(90deg, #2f6fd6 0 34px, #ffd43b 34px 68px); border-bottom: 4px solid var(--ink); z-index: 2; }
+  .awning::after { content: ''; position: absolute; left: 0; right: 0; bottom: -20px; height: 20px;
+    background: radial-gradient(circle at 17px 0, #2f6fd6 16px, transparent 17px) 0 0 / 68px 20px repeat-x,
+                radial-gradient(circle at 51px 0, #ffd43b 16px, transparent 17px) 0 0 / 68px 20px repeat-x;
+    filter: drop-shadow(0 3px 0 var(--ink)); }
+  .art.shop { background: linear-gradient(#ffcf7a, #b9772f); }
+  .art.shop .keeper { position: absolute; right: 12px; bottom: -6px; height: 62%; filter: drop-shadow(0 6px 4px rgba(0,0,0,.4)); z-index: 1; }
+  .counter { background: repeating-linear-gradient(0deg, #d9a066 0 22px, #c98e55 22px 24px); border-top: 0; }
+  .counter p { color: #4a2c10; }
+  .album { display: inline-block; margin-top: 8px; font-size: 18px; font-weight: 900; background: var(--cream); border: 3px solid var(--ink); border-radius: 12px; padding: 1px 10px; }
+</style>
+</head>
+<body>
+  <header>
+    <div class="coins"><div class="coin"></div><span id="coins">0</span></div>
+  </header>
+  <h1>Demigod Camp</h1>
+  <p class="sub">Choose your adventure, hero!</p>
+
+  <main class="games">
+    <a class="card" href="arena.html">
+      <div class="art trials"><img src="assets/hero.png" alt=""><img class="cover" src="assets/menu/trials.jpg" alt="" onerror="this.remove()"></div>
+      <div class="body"><h2>Demigod Trials</h2><p>Listen to the Oracle and strike the right monster.</p><div class="stars" id="best-arena"></div></div>
+      <span class="play">Play</span>
+    </a>
+    <a class="card" href="labyrinth.html">
+      <div class="art maze"><span>🧵</span><img class="cover" src="assets/menu/labyrinth.jpg" alt="" onerror="this.remove()"></div>
+      <div class="body"><h2>The Labyrinth</h2><p>Follow Ariadne's voice and escape the Minotaur.</p><div class="stars" id="best-labyrinth"></div></div>
+      <span class="play">Play</span>
+    </a>
+    <a class="card" href="olympus.html">
+      <div class="art climb"><span>⚡</span><img class="cover" src="assets/menu/olympus.jpg" alt="" onerror="this.remove()"></div>
+      <div class="body"><h2>Climb to Olympus</h2><p>Daughter of Zeus, climb the mountain to your father.</p><div class="stars" id="best-olympus"></div></div>
+      <span class="play">Play</span>
+    </a>
+    <a class="card" href="hermes.html">
+      <div class="art hermes"><span>📦</span><img class="cover" src="assets/menu/hermes.jpg" alt="" onerror="this.remove()"></div>
+      <div class="body"><h2>Hermes Express</h2><p>Read the notes and help Hermes deliver every package.</p><div class="stars" id="best-hermes"></div></div>
+      <span class="play">Play</span>
+    </a>
+    <a class="card" href="voyage.html">
+      <div class="art voyage"><span>⛵</span><img class="cover" src="assets/menu/voyage.jpg" alt="" onerror="this.remove()"></div>
+      <div class="body"><h2>The Voyage</h2><p>Sail with Odysseus past monsters and magic, all the way home.</p><div class="stars" id="best-voyage"></div></div>
+      <span class="play">Play</span>
+    </a>
+    <a class="card stall" href="shop.html">
+      <div class="awning"></div>
+      <div class="art shop"><span>🏛️</span><img class="cover" src="assets/shop/stall.jpg" alt="" onerror="this.remove()"><img class="keeper" src="assets/hermes/hermes.png" alt="" onerror="this.remove()"></div>
+      <div class="body counter"><h2>Hermes' Shop</h2><p>Spend your drachmas on cards, pets and hats.</p><div class="album" id="album-count"></div></div>
+      <span class="play">Visit</span>
+    </a>
+  </main>
+
+<script src="common.js"></script>
+<script src="phrases.js"></script>
+<script>
+  const s = Save.get();
+  document.getElementById('coins').textContent = s.coins;
+  const stars = (n, of) => n ? '⭐'.repeat(n) + '☆'.repeat(Math.max(of - n, 0)) : '';
+  document.getElementById('best-arena').textContent = stars(s.best.arena, 5);
+  document.getElementById('best-labyrinth').textContent = stars(s.best.labyrinth, 5);
+  document.getElementById('best-olympus').textContent = stars(s.best.olympus, 4);
+  document.getElementById('best-hermes').textContent = stars(s.best.hermes, 5);
+  document.getElementById('best-voyage').textContent = stars(s.best.voyage, 6);
+  document.getElementById('album-count').textContent = '🃏 ' + (s.cards || []).length + '/' + CARDS.length;
+</script>
+</body>
+</html>
